@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s https://nodejs.org/dist/latest-v22.x/)",
+      "Bash(npx tsc *)",
+      "Bash(mkdir -p components/planning components/locatie)",
+      "Bash(cp screens/Planning.tsx components/planning/TijdlijnPlanning.tsx)",
+      "Bash(sed -i '' -e 's|'\\\\''../store/|'\\\\''../../store/|g' -e 's|'\\\\''../lib/|'\\\\''../../lib/|g' -e 's|'\\\\''../components/gantt/|'\\\\''../gantt/|g' -e 's|'\\\\''../components/ui'\\\\''|'\\\\''../ui'\\\\''|g' -e 's|export default function Planning\\(|export default function TijdlijnPlanning\\(|' components/planning/TijdlijnPlanning.tsx)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(echo \"EXIT CODE: $?\")",
+      "Bash(echo \"TSC_EXIT_CODE=$?\")",
+      "Bash(grep -rn \"to=[\\\\\"'\\\\\\\\\\\\`]/\" src/screens/Planningstemplates.tsx src/screens/TemplateEditorScherm.tsx src/screens/ProjectDetail.tsx)",
+      "Bash(grep -rhoE \">[A-Za-z][^<>{}]{2,45}<\" src/components/projecten/NieuwProjectWizard.tsx src/components/project/OpslaanAlsTemplateModal.tsx src/components/templates/TaakRij.tsx src/components/templates/TaakModal.tsx src/components/templates/TemplateFaseKaart.tsx src/components/templates/TemplateCapaciteit.tsx)",
+      "Bash(echo \"tsc: OK \\($?\\)\")",
+      "Bash(npx vite *)"
+    ]
+  }
+}
