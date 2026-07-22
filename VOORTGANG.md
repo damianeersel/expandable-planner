@@ -7,7 +7,7 @@
 3. **PR-nummers & modellen**: PR + 4 cijfers als enige identificatie; modellen E7P/E9P/E13T/E13H/E16TU/E16HU.
 4. **Fase 1 templates**: Planningstemplates-scherm, template-editor, versies, wizard-integratie, complexiteitsniveaus in Instellingen.
 5. **Fase 2 detailplanning**: taakmodel, `lib/taken.ts`, `lib/bestanden.ts` (IndexedDB), notities/historie/bestanden/partnerTypes, Detailplanning-schermen (FaseKaart/FasesTab/TaakModal e.d.), volledig partnerbeheer, Bestanden-tab. **Gemerged naar main via PR #1 (a81b0cf) → live op Vercel.**
-6. **Fase 3 (deze sessie, branch `fase-3-statusbord-capaciteit`)**:
+6. **Fase 3** — **gemerged naar main via PR #2 (b03b57d) → live op Vercel**:
    - **Kanban-statusbord** in Fases & werkzaamheden: weergavewissel Fasekaarten ↔ Statusbord (`FasesTab`). Vier statuskolommen (te doen / in uitvoering / on hold / gereed) met tellers en uren, taakkaartjes met fase·proces-context, badges (extern/projectspecifiek/blokkade/prioriteit), on-hold-reden en toewijzing. Drag-and-drop wisselt de status met dezelfde regels als de taakrij: reden-dialoog bij on hold en heropenen, voorganger-/afhankelijkheids-waarschuwingen, historie + undo-toast. Fasefilter. Permissies: alleen taken van je eigen afdeling sleepbaar (productieleider), management volledig alleen-lezen, taaknaam klikbaar → TaakModal (alleen planner).
    - **Statuswissel-logica geëxtraheerd** naar `useTaakStatusWissel` (src/components/project/detail/), gedeeld door `TaakRij` (dropdown) en `TaakStatusBord` (drop) — geen duplicatie.
    - **Beschikbaarheid × detailplanning**: weekweergave heeft nu kolommen **Gepland** (taakuren uit de detailplanning, tooltip per taak met PR-nummer; schaduwprojecten gemarkeerd) en **Bezetting** (t.o.v. netto; <85% ok · 85–100% druk · >100% overboekt), incl. teamtotalen. Maandweergave: geplande uren in de weekcel-tooltip, rode ring bij overboekte weken, totaalkolom Gepland. Nieuw in `lib/taken.ts`: `medewerkerTaakBelastingInWeek` (details per taak); `medewerkerTaakUrenInWeek` somt die en slaat geannuleerde projecten nu over.
@@ -23,11 +23,10 @@
 
 ## Openstaande stappen
 
-1. PR `fase-3-statusbord-capaciteit` → review/merge door Damian (merge = automatische Vercel-deploy).
-2. Daarna eventueel: sorteer-/prioriteitsvolgorde binnen bordkolommen, projectoverstijgend statusbord (alle projecten), bezettingssignaal per uitvoerende in de TaakModal-toewijzing hergebruiken vanuit `medewerkerTaakBelastingInWeek`.
+Geen harde openstaande stappen. Mogelijke vervolgideeën: sorteer-/prioriteitsvolgorde binnen bordkolommen, projectoverstijgend statusbord (alle projecten), bezettingssignaal per uitvoerende in de TaakModal-toewijzing hergebruiken vanuit `medewerkerTaakBelastingInWeek`.
 
 ## Weetjes
 
-- Laatst gecommitte stand op origin/main = t/m Fase 2 (merge a81b0cf). Fase 3 staat op de feature-branch.
+- Laatst gecommitte stand op origin/main = t/m Fase 3 (merge b03b57d, PR #2); werkboom schoon.
 - Stale HMR-consolefouten na grote refactors zijn normaal; harde herlaad lost het op.
 - localStorage bevat mogelijk oude seed; migratie vangt dit op, maar "Demodata herstellen" (Instellingen) geeft de nieuwste demoset. Elke dev-serverpoort is een eigen origin met eigen localStorage.
