@@ -132,15 +132,30 @@ export function urenPerUitvoerende(taak: Taak): Record<string, number> {
   return resultaat
 }
 
+export interface TaakWeekBelasting {
+  plek: TaakPlek
+  /** Uren van deze medewerker op deze taak die in de week vallen. */
+  uren: number
+  /** True wanneer het bijbehorende project nog een schaduwproject is. */
+  schaduw: boolean
+}
+
 /**
- * Geplande taakuren van één medewerker in een week (ma = weekStart).
- * De taakuren worden evenredig over de werkdagen van de taakperiode gespreid.
- * Teamuren zonder toegewezen medewerkers tellen hier niet mee (die zitten al in de teamcapaciteit).
+ * Geplande taakuren van één medewerker in een week (ma = weekStart), uitgesplitst per taak.
+ * De taakuren worden evenredig over de werkdagen van de taakperiode gespreid; gerede taken
+ * en geannuleerde projecten tellen niet mee. Teamuren zonder toegewezen medewerkers tellen
+ * hier niet mee (die zitten al in de teamcapaciteit). Gesorteerd op uren (aflopend).
  */
-export function medewerkerTaakUrenInWeek(data: AppData, medewerkerId: string, weekStart: ISODate): number {
+export function medewerkerTaakBelastingInWeek(
+  data: AppData,
+  medewerkerId: string,
+  weekStart: ISODate,
+): TaakWeekBelasting[] {
   const weekEind = addDagen(weekStart, 4)
-  let uren = 0
+  const r: TaakWeekBelasting[] = []
   for (const fase of data.fases) {
+    const project = data.projecten.find((p) => p.id === fase.projectId)
+    if (project?.status === 'geannuleerd') continue
     for (const proces of fase.werkpakketten) {
       for (const taak of proces.taken) {
         if (taak.status === 'gereed') continue
@@ -151,11 +166,17 @@ export function medewerkerTaakUrenInWeek(data: AppData, medewerkerId: string, we
         const overlap = overlapWerkdagen(start, eind, weekStart, weekEind)
         if (overlap <= 0) continue
         const eigenUren = urenPerUitvoerende(taak)[medewerkerId] ?? 0
-        uren += (eigenUren * overlap) / totaalWd
+        if (eigenUren <= 0) continue
+        r.push({ plek: { fase, proces, taak }, uren: (eigenUren * overlap) / totaalWd, schaduw: project?.status === 'schaduw' })
       }
     }
   }
-  return uren
+  return r.sort((a, b) => b.uren - a.uren)
+}
+
+/** Som van de geplande taakuren van één medewerker in een week (zie medewerkerTaakBelastingInWeek). */
+export function medewerkerTaakUrenInWeek(data: AppData, medewerkerId: string, weekStart: ISODate): number {
+  return medewerkerTaakBelastingInWeek(data, medewerkerId, weekStart).reduce((s, t) => s + t.uren, 0)
 }
 
 /** Taken van een medewerker die overlappen met een periode (voor beschikbaarheidswaarschuwingen). */

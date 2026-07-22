@@ -6,13 +6,14 @@ import { ArrowRightLeft, Copy, OctagonAlert, Pencil, ShieldCheck, Trash2, UserPl
 import type { Taak, TaakStatus, Fase, Werkpakket } from '../../../lib/types'
 import { EXTERNE_ACTIE_LABELS, TAAK_STATUS_LABELS } from '../../../lib/types'
 import { formatDatum, formatDatumKort, vandaagISO } from '../../../lib/dates'
-import { afhankelijkeTaken, openVoorgangers, TAAK_STATUS_VOLGORDE, urenPerUitvoerende } from '../../../lib/taken'
+import { afhankelijkeTaken, TAAK_STATUS_VOLGORDE, urenPerUitvoerende } from '../../../lib/taken'
 import { projectFases } from '../../../lib/capacity'
 import { uid } from '../../../lib/uid'
 import { useApp } from '../../../store/AppState'
-import { BevestigDialog, Badge, Invoer, Keuze, Knop, Modal, Tekstvak, Tooltip, Veld, useToast } from '../../ui'
+import { BevestigDialog, Badge, Keuze, Knop, Modal, Tekstvak, Tooltip, Veld, useToast } from '../../ui'
 import { AvatarRij, magVoortgangBijwerken, RijMenu, TAAK_STATUS_SELECT_STIJL, type MenuItem } from './gedeeld'
 import NotitiePopover from './NotitiePopover'
+import { useTaakStatusWissel } from './useTaakStatusWissel'
 
 interface Props {
   fase: Fase
@@ -26,9 +27,6 @@ export default function TaakRij({ fase, proces, taak, onBewerken, onToewijzen }:
   const { data, dispatch, persona, permissies } = useApp()
   const { toon } = useToast()
 
-  const [statusDialoog, setStatusDialoog] = useState<{ doel: TaakStatus; soort: 'on_hold' | 'heropenen' } | null>(null)
-  const [reden, setReden] = useState('')
-  const [hervattenOp, setHervattenOp] = useState('')
   const [blokkadeOpen, setBlokkadeOpen] = useState(false)
   const [blokkadeTekst, setBlokkadeTekst] = useState('')
   const [verplaatsOpen, setVerplaatsOpen] = useState(false)
@@ -57,6 +55,7 @@ export default function TaakRij({ fase, proces, taak, onBewerken, onToewijzen }:
   )
   const magNotitie = persona.rol !== 'management'
   const undoActie = { label: 'Ongedaan maken', onClick: () => dispatch({ type: 'UNDO' as const }) }
+  const { vraagStatusWissel, statusDialoog } = useTaakStatusWissel(projectId)
 
   const patchTaak = (
     patch: Partial<Taak>,
@@ -74,98 +73,6 @@ export default function TaakRij({ fase, proces, taak, onBewerken, onToewijzen }:
       historie,
     })
     toon(soort, tekst, undoActie)
-  }
-
-  // ---------- Statusacties ----------
-
-  const wijzigStatus = (nieuw: TaakStatus) => {
-    if (nieuw === taak.status) return
-    // Heropenen van een gerede taak vraagt altijd om een korte reden.
-    if (taak.status === 'gereed') {
-      setReden('')
-      setStatusDialoog({ doel: nieuw, soort: 'heropenen' })
-      return
-    }
-    if (nieuw === 'on_hold') {
-      setReden('')
-      setHervattenOp('')
-      setStatusDialoog({ doel: nieuw, soort: 'on_hold' })
-      return
-    }
-    const historie = {
-      wijziging: 'Status gewijzigd',
-      oud: TAAK_STATUS_LABELS[taak.status],
-      nieuw: TAAK_STATUS_LABELS[nieuw],
-    }
-    if (nieuw === 'in_uitvoering') {
-      const voorgangers = openVoorgangers(data, projectId, taak)
-      patchTaak(
-        { status: 'in_uitvoering', werkelijkeStart: taak.werkelijkeStart ?? vandaagISO(), onHoldReden: undefined, hervattenOp: undefined },
-        historie,
-        `"${taak.naam}" staat nu op in uitvoering.`,
-      )
-      if (voorgangers.length > 0) {
-        toon(
-          'waarschuwing',
-          `Voorganger "${voorgangers[0].taak.naam}" is nog niet gereed.${voorgangers.length > 1 ? ` (+${voorgangers.length - 1} andere voorganger(s))` : ''}`,
-        )
-      }
-      return
-    }
-    if (nieuw === 'gereed') {
-      // Afhankelijke taken die door deze gereedmelding kunnen starten (alle overige voorgangers al gereed).
-      const kanStarten = afhankelijkeTaken(data, projectId, taak.id).filter(
-        (dep) =>
-          dep.taak.status === 'te_doen' &&
-          openVoorgangers(data, projectId, dep.taak).every((p) => p.taak.id === taak.id),
-      )
-      patchTaak(
-        { status: 'gereed', werkelijkGereedOp: vandaagISO(), onHoldReden: undefined, hervattenOp: undefined },
-        historie,
-        `"${taak.naam}" is gereed gemeld.`,
-      )
-      if (kanStarten.length > 0) {
-        toon(
-          'info',
-          kanStarten.length === 1
-            ? `"${kanStarten[0].taak.naam}" kan nu starten — alle voorgangers zijn gereed.`
-            : `${kanStarten.map((p) => `"${p.taak.naam}"`).join(' en ')} kunnen nu starten — alle voorgangers zijn gereed.`,
-        )
-      }
-      return
-    }
-    // Terug naar 'te doen'.
-    patchTaak(
-      { status: 'te_doen', onHoldReden: undefined, hervattenOp: undefined },
-      historie,
-      `"${taak.naam}" staat weer op te doen.`,
-    )
-  }
-
-  const bevestigStatusDialoog = () => {
-    if (!statusDialoog) return
-    if (reden.trim() === '') {
-      toon('fout', statusDialoog.soort === 'on_hold' ? 'Een reden is verplicht om een taak on hold te zetten.' : 'Een korte reden is verplicht om een gerede taak te heropenen.')
-      return
-    }
-    if (statusDialoog.soort === 'on_hold') {
-      patchTaak(
-        { status: 'on_hold', onHoldReden: reden.trim(), hervattenOp: hervattenOp || undefined },
-        { wijziging: 'Status gewijzigd', oud: TAAK_STATUS_LABELS[taak.status], nieuw: TAAK_STATUS_LABELS.on_hold },
-        `"${taak.naam}" staat on hold.`,
-      )
-    } else {
-      const doel = statusDialoog.doel
-      const patch: Partial<Taak> = { status: doel, werkelijkGereedOp: undefined }
-      if (doel === 'in_uitvoering') patch.werkelijkeStart = taak.werkelijkeStart ?? vandaagISO()
-      if (doel === 'on_hold') patch.onHoldReden = reden.trim()
-      patchTaak(
-        patch,
-        { wijziging: `Taak heropend — ${reden.trim()}`, oud: TAAK_STATUS_LABELS.gereed, nieuw: TAAK_STATUS_LABELS[doel] },
-        `"${taak.naam}" is heropend.`,
-      )
-    }
-    setStatusDialoog(null)
   }
 
   // ---------- Blokkade ----------
@@ -335,7 +242,7 @@ export default function TaakRij({ fase, proces, taak, onBewerken, onToewijzen }:
           {magStatus ? (
             <select
               value={taak.status}
-              onChange={(e) => wijzigStatus(e.target.value as TaakStatus)}
+              onChange={(e) => vraagStatusWissel({ fase, proces, taak }, e.target.value as TaakStatus)}
               onClick={(e) => e.stopPropagation()}
               title={
                 taak.status === 'on_hold' && taak.onHoldReden
@@ -385,40 +292,8 @@ export default function TaakRij({ fase, proces, taak, onBewerken, onToewijzen }:
         </td>
       </tr>
 
-      {/* On hold / heropenen mini-dialoog */}
-      <Modal
-        open={statusDialoog !== null}
-        titel={statusDialoog?.soort === 'on_hold' ? `Taak on hold — ${taak.naam}` : `Taak heropenen — ${taak.naam}`}
-        onSluiten={() => setStatusDialoog(null)}
-        voettekst={
-          <>
-            <Knop onClick={() => setStatusDialoog(null)}>Annuleren</Knop>
-            <Knop variant="primary" onClick={bevestigStatusDialoog}>
-              {statusDialoog?.soort === 'on_hold' ? 'On hold zetten' : `Naar ${statusDialoog ? TAAK_STATUS_LABELS[statusDialoog.doel].toLowerCase() : ''}`}
-            </Knop>
-          </>
-        }
-      >
-        <div className="space-y-3">
-          <Veld label={statusDialoog?.soort === 'on_hold' ? 'Reden' : 'Reden van heropenen'} verplicht>
-            <Tekstvak
-              rows={2}
-              value={reden}
-              onChange={(e) => setReden(e.target.value)}
-              placeholder={
-                statusDialoog?.soort === 'on_hold'
-                  ? 'Bijv. wachten op materiaal, prioriteit elders…'
-                  : 'Bijv. keuring afgekeurd, rework nodig…'
-              }
-            />
-          </Veld>
-          {statusDialoog?.soort === 'on_hold' && (
-            <Veld label="Verwachte hervattingsdatum (optioneel)">
-              <Invoer type="date" value={hervattenOp} onChange={(e) => setHervattenOp(e.target.value)} />
-            </Veld>
-          )}
-        </div>
-      </Modal>
+      {/* On hold / heropenen mini-dialoog (gedeeld met het statusbord) */}
+      {statusDialoog}
 
       {/* Blokkade melden */}
       <Modal
