@@ -1,35 +1,23 @@
-// Uitklapbare kaart voor één fase: datums, status, blokkades en werkpakketten met voortgang.
+// Uitklapbare kaart voor één fase: datums (met cascade), status, blokkades, tellers,
+// notities en fase-acties, plus de detailplanning met processen (werkpakketten) en taken.
 
 import { useEffect, useState } from 'react'
-import { AlertTriangle, ChevronDown, ChevronRight, OctagonAlert, ShieldCheck } from 'lucide-react'
-import type { Fase, ISODate, Werkpakket } from '../../lib/types'
+import { AlertTriangle, ChevronDown, ChevronRight, Copy, OctagonAlert, Plus, ShieldCheck, Trash2 } from 'lucide-react'
+import type { Fase, ISODate, Taak } from '../../lib/types'
 import { AFDELING_LABELS, FASE_STATUS_LABELS, type FaseStatus } from '../../lib/types'
 import { formatDatum, werkdagenTussen } from '../../lib/dates'
+import type { TaakPlek } from '../../lib/taken'
+import { uid } from '../../lib/uid'
 import { useApp } from '../../store/AppState'
-import { Badge, Invoer, Kaart, Knop, Tekstvak, VoortgangsBalk, useToast, type BadgeKleur } from '../ui'
+import { Badge, BevestigDialog, Invoer, Kaart, Knop, Tekstvak, VoortgangsBalk, useToast } from '../ui'
+import { FASE_STATUS_KLEUR, magVoortgangBijwerken, RijMenu, type MenuItem } from './detail/gedeeld'
+import NotitiePopover from './detail/NotitiePopover'
+import ProcesModal from './detail/ProcesModal'
+import ProcesRij from './detail/ProcesRij'
+import TaakModal from './detail/TaakModal'
 
-export const FASE_STATUS_KLEUR: Record<FaseStatus, BadgeKleur> = {
-  gepland: 'grijs',
-  bezig: 'brand',
-  gereed: 'groen',
-  geblokkeerd: 'rood',
-}
-
-/** Mag de huidige persona voortgang/blokkades van deze fase bijwerken? */
-export function magVoortgangBijwerken(
-  rol: string,
-  afdeling: string | undefined,
-  fase: Fase,
-  voortgangPermissie: boolean,
-  teamAfdeling?: string,
-): boolean {
-  if (!voortgangPermissie) return false
-  // Productieleider mag ook fases bijwerken die door een team van zijn afdeling worden
-  // uitgevoerd (bijv. de kwaliteitsfase, die bij een afbouwteam belegd is).
-  if (rol === 'productieleider') return fase.afdeling === afdeling || teamAfdeling === afdeling
-  if (rol === 'engineering_lead') return fase.afdeling === 'engineering'
-  return true
-}
+// Behouden exports voor bestaande importeurs (o.a. ProjectDetail.tsx).
+export { FASE_STATUS_KLEUR, magVoortgangBijwerken } from './detail/gedeeld'
 
 /** Datumveld dat pas bij verlaten van het veld (of Enter) doorvoert, zodat cascades niet per toetsaanslag vuren. */
 function DatumInvoer({ waarde, title, onCommit }: { waarde: ISODate; title?: string; onCommit: (d: ISODate) => boolean }) {
@@ -54,42 +42,10 @@ function DatumInvoer({ waarde, title, onCommit }: { waarde: ISODate; title?: str
   )
 }
 
-function VoortgangInvoer({ waarde, onCommit }: { waarde: number; onCommit: (v: number) => void }) {
-  const [v, setV] = useState(waarde)
-  useEffect(() => setV(waarde), [waarde])
-
-  const commit = (n: number) => {
-    const c = Math.max(0, Math.min(100, Math.round(n)))
-    setV(c)
-    if (c !== waarde) onCommit(c)
-  }
-
-  return (
-    <div className="flex items-center gap-2">
-      <input
-        type="range"
-        min={0}
-        max={100}
-        step={5}
-        value={v}
-        onChange={(e) => setV(Number(e.target.value))}
-        onPointerUp={(e) => commit(Number(e.currentTarget.value))}
-        onKeyUp={(e) => commit(Number(e.currentTarget.value))}
-        className="h-1.5 w-24 cursor-pointer accent-brand-600"
-      />
-      <input
-        type="number"
-        min={0}
-        max={100}
-        value={v}
-        onChange={(e) => setV(Number(e.target.value))}
-        onBlur={(e) => commit(Number(e.currentTarget.value))}
-        onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
-        className="w-14 rounded-md border border-slate-300 px-1.5 py-0.5 text-right text-xs tabular-nums focus:border-brand-500 focus:outline-none"
-      />
-      <span className="text-xs text-slate-400">%</span>
-    </div>
-  )
+interface TaakModalState {
+  plek?: TaakPlek
+  initWpId?: string
+  focusToewijzing?: boolean
 }
 
 export default function FaseKaart({ fase, standaardOpen = false }: { fase: Fase; standaardOpen?: boolean }) {
@@ -98,13 +54,22 @@ export default function FaseKaart({ fase, standaardOpen = false }: { fase: Fase;
   const [open, setOpen] = useState(standaardOpen)
   const [blokkadeFormOpen, setBlokkadeFormOpen] = useState(false)
   const [blokkadeTekst, setBlokkadeTekst] = useState('')
+  const [procesModalOpen, setProcesModalOpen] = useState(false)
+  const [taakModal, setTaakModal] = useState<TaakModalState | null>(null)
+  const [verwijderOpen, setVerwijderOpen] = useState(false)
 
+  const project = data.projecten.find((p) => p.id === fase.projectId)
   const team = fase.teamId ? data.teams.find((t) => t.id === fase.teamId) : undefined
   const productieleider = team?.productieleiderId
     ? data.medewerkers.find((m) => m.id === team.productieleiderId)
     : undefined
   const magVoortgang = magVoortgangBijwerken(persona.rol, persona.afdeling, fase, permissies.voortgangBijwerken, team?.afdeling)
   const magDatums = permissies.planningBewerken
+  const undoActie = { label: 'Ongedaan maken', onClick: () => dispatch({ type: 'UNDO' as const }) }
+
+  const aantalProcessen = fase.werkpakketten.length
+  const aantalTaken = fase.werkpakketten.reduce((s, wp) => s + wp.taken.length, 0)
+  const tellerTekst = `${aantalProcessen} ${aantalProcessen === 1 ? 'proces' : 'processen'} · ${aantalTaken} ${aantalTaken === 1 ? 'taak' : 'taken'}`
 
   const wijzigDatums = (start: ISODate, eind: ISODate): boolean => {
     if (!start || !eind) return false
@@ -134,15 +99,43 @@ export default function FaseKaart({ fase, standaardOpen = false }: { fase: Fase;
     toon('succes', `Blokkade op "${fase.naam}" opgeheven.`)
   }
 
-  const zetWerkpakketVoortgang = (wp: Werkpakket, v: number) => {
-    dispatch({
-      type: 'WERKPAKKET_BIJWERKEN',
-      faseId: fase.id,
-      wpId: wp.id,
-      patch: { voortgang: v, status: v >= 100 ? 'gereed' : v > 0 ? 'bezig' : 'gepland' },
-    })
-    toon('succes', `Voortgang van "${wp.naam}" bijgewerkt naar ${v}%.`)
+  // ---------- Fase-acties ----------
+
+  /** Diepe kopie met nieuwe ids voor fase, processen én taken; taak-afhankelijkheden binnen de kopie hermappen. */
+  const dupliceerFase = () => {
+    const idMap = new Map<string, string>()
+    const werkpakketten = fase.werkpakketten
+      .map((wp) => ({
+        ...wp,
+        id: uid('wp'),
+        taken: wp.taken.map((t): Taak => {
+          const nieuwId = uid('taak')
+          idMap.set(t.id, nieuwId)
+          return { ...t, id: nieuwId }
+        }),
+      }))
+      .map((wp) => ({
+        ...wp,
+        taken: wp.taken.map((t) => ({ ...t, afhankelijkVan: t.afhankelijkVan.map((d) => idMap.get(d) ?? d) })),
+      }))
+    const kopie: Fase = { ...fase, id: uid('fase'), naam: `${fase.naam} (kopie)`, werkpakketten }
+    dispatch({ type: 'FASE_TOEVOEGEN', fase: kopie, gebruiker: persona.naam })
+    toon('succes', `Fase gedupliceerd als "${kopie.naam}".`, undoActie)
   }
+
+  const verwijderFase = () => {
+    dispatch({ type: 'FASE_VERWIJDEREN', faseId: fase.id, gebruiker: persona.naam })
+    toon('succes', `Fase "${fase.naam}" verwijderd.`, undoActie)
+    setVerwijderOpen(false)
+  }
+
+  const faseActies: MenuItem[] = permissies.planningBewerken
+    ? [
+        { label: 'Proces toevoegen', icon: <Plus size={14} />, onClick: () => setProcesModalOpen(true) },
+        { label: 'Fase dupliceren', icon: <Copy size={14} />, onClick: dupliceerFase },
+        { label: 'Fase verwijderen', icon: <Trash2 size={14} />, gevaarlijk: true, onClick: () => setVerwijderOpen(true) },
+      ]
+    : []
 
   return (
     <Kaart className={fase.status === 'geblokkeerd' ? 'border-red-300' : ''}>
@@ -187,8 +180,13 @@ export default function FaseKaart({ fase, standaardOpen = false }: { fase: Fase;
         <span className="text-xs tabular-nums text-slate-500">
           {fase.uren > 0 ? `${fase.uren} u` : `${werkdagenTussen(fase.start, fase.eind)} werkdagen`}
         </span>
+        <span className="text-xs tabular-nums text-slate-400">{tellerTekst}</span>
         <Badge kleur={FASE_STATUS_KLEUR[fase.status]}>{FASE_STATUS_LABELS[fase.status]}</Badge>
         <VoortgangsBalk pct={fase.status === 'gereed' ? 100 : fase.voortgang} className="w-44 min-w-36 flex-1" />
+        <span className="flex items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
+          <NotitiePopover projectId={fase.projectId} niveau="fase" doelId={fase.id} doelNaam={fase.naam} />
+          <RijMenu items={faseActies} title="Fase-acties" />
+        </span>
       </div>
 
       {/* Blokkade-informatie (altijd zichtbaar) */}
@@ -244,39 +242,45 @@ export default function FaseKaart({ fase, standaardOpen = false }: { fase: Fase;
             </div>
           )}
 
-          {/* Werkpakketten */}
+          {/* Processen & taken */}
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <h4 className="text-xs font-medium uppercase tracking-wide text-slate-500">Processen & taken</h4>
+            {permissies.planningBewerken && (
+              <div className="flex gap-2">
+                <Knop klein onClick={() => setProcesModalOpen(true)}>
+                  <Plus size={14} /> Proces toevoegen
+                </Knop>
+                <Knop
+                  klein
+                  variant="primary"
+                  disabled={fase.werkpakketten.length === 0}
+                  title={fase.werkpakketten.length === 0 ? 'Voeg eerst een proces toe aan deze fase' : undefined}
+                  onClick={() => setTaakModal({ initWpId: fase.werkpakketten[0]?.id })}
+                >
+                  <Plus size={14} /> Taak toevoegen
+                </Knop>
+              </div>
+            )}
+          </div>
+
           {fase.werkpakketten.length === 0 ? (
-            <p className="text-xs text-slate-400">Geen werkpakketten voor deze fase.</p>
+            <p className="text-xs text-slate-400">Geen processen voor deze fase.</p>
           ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-xs uppercase tracking-wide text-slate-500">
-                  <th className="py-1.5 pr-3 font-medium">Werkpakket</th>
-                  <th className="py-1.5 pr-3 text-right font-medium">Uren</th>
-                  <th className="py-1.5 pr-3 font-medium">Status</th>
-                  <th className="w-56 py-1.5 font-medium">Voortgang</th>
-                </tr>
-              </thead>
-              <tbody>
-                {fase.werkpakketten.map((wp) => (
-                  <tr key={wp.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                    <td className="py-2 pr-3 text-slate-700">{wp.naam}</td>
-                    <td className="py-2 pr-3 text-right tabular-nums text-slate-600">{wp.uren} u</td>
-                    <td className="py-2 pr-3">
-                      <Badge kleur={FASE_STATUS_KLEUR[wp.status]}>{FASE_STATUS_LABELS[wp.status]}</Badge>
-                    </td>
-                    <td className="py-2">
-                      {magVoortgang ? (
-                        <VoortgangInvoer waarde={wp.voortgang} onCommit={(v) => zetWerkpakketVoortgang(wp, v)} />
-                      ) : (
-                        <VoortgangsBalk pct={wp.voortgang} />
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="space-y-2">
+              {fase.werkpakketten.map((wp) => (
+                <ProcesRij
+                  key={wp.id}
+                  fase={fase}
+                  proces={wp}
+                  onTaakNieuw={() => setTaakModal({ initWpId: wp.id })}
+                  onTaakBewerken={(taak, toewijzen) =>
+                    setTaakModal({ plek: { fase, proces: wp, taak }, focusToewijzing: toewijzen })
+                  }
+                />
+              ))}
+            </div>
           )}
+
           {!magVoortgang && permissies.voortgangBijwerken && (
             <p className="mt-2 text-[11px] text-slate-400">
               Je kunt alleen voortgang bijwerken voor fases van je eigen afdeling.
@@ -284,6 +288,33 @@ export default function FaseKaart({ fase, standaardOpen = false }: { fase: Fase;
           )}
         </div>
       )}
+
+      {/* Dialogen */}
+      <ProcesModal open={procesModalOpen} fase={fase} onSluiten={() => setProcesModalOpen(false)} />
+
+      {project && taakModal && (
+        <TaakModal
+          open
+          project={project}
+          plek={taakModal.plek}
+          initFaseId={fase.id}
+          initWpId={taakModal.initWpId}
+          focusToewijzing={taakModal.focusToewijzing}
+          onSluiten={() => setTaakModal(null)}
+        />
+      )}
+
+      <BevestigDialog
+        open={verwijderOpen}
+        titel="Fase verwijderen"
+        tekst={`Weet je zeker dat je de fase "${fase.naam}" wilt verwijderen? Hiermee verwijder je ook ${aantalProcessen} ${
+          aantalProcessen === 1 ? 'proces' : 'processen'
+        } en ${aantalTaken} ${aantalTaken === 1 ? 'taak' : 'taken'}. Fases die van deze fase afhankelijk zijn, verliezen die koppeling.`}
+        bevestigLabel="Fase verwijderen"
+        gevaarlijk
+        onBevestig={verwijderFase}
+        onAnnuleer={() => setVerwijderOpen(false)}
+      />
     </Kaart>
   )
 }

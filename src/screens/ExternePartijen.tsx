@@ -1,30 +1,48 @@
-// Externe partijen: spuiterkalender met slotbewaking + beheer van spuiters en onderaannemers.
+// Externe partijen: spuiterkalender met slotbewaking + volledig partnerbeheer + overzicht van externe acties.
 
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   AlertTriangle,
+  Archive,
+  ArchiveRestore,
   Building2,
+  CalendarClock,
   CalendarRange,
+  ClipboardList,
   Clock,
+  Copy,
+  Mail,
+  MapPin,
+  MoreVertical,
   Paintbrush,
   Pencil,
+  Phone,
+  Plus,
   Search,
+  Timer,
+  Trash2,
   Truck,
   User,
 } from 'lucide-react'
 import { useApp } from '../store/AppState'
 import {
   EXTERN_TYPE_LABELS,
+  EXTERNE_ACTIE_LABELS,
+  externTypeLabel,
   FASE_STATUS_LABELS,
-  type ExternType,
+  TAAK_STATUS_LABELS,
+  type ExterneActieStatus,
   type ExternePartij,
   type Fase,
   type ISODate,
   type Project,
+  type Taak,
+  type TaakStatus,
 } from '../lib/types'
 import {
   addDagen,
+  formatDatum,
   formatDatumKort,
   formatDatumMetDag,
   parseISO,
@@ -35,8 +53,10 @@ import {
   weekReeks,
   werkdagenTussen,
 } from '../lib/dates'
+import { uid } from '../lib/uid'
 import {
   Badge,
+  BevestigDialog,
   InfoTip,
   Invoer,
   Kaart,
@@ -50,6 +70,7 @@ import {
   Tekstvak,
   Veld,
   useToast,
+  type BadgeKleur,
 } from '../components/ui'
 
 // ---------- Lokale constanten & helpers ----------
@@ -65,6 +86,27 @@ const PARTIJ_STATUS_KLEUR: Record<ExternePartij['status'], 'groen' | 'amber' | '
   vol: 'amber',
   vertraagd: 'rood',
 }
+
+const ACTIE_STATUS_KLEUR: Record<ExterneActieStatus, BadgeKleur> = {
+  niet_aangevraagd: 'grijs',
+  aangevraagd: 'amber',
+  wacht_bevestiging: 'amber',
+  bevestigd: 'blauw',
+  in_uitvoering: 'blauw',
+  on_hold: 'amber',
+  gereed: 'groen',
+  vertraagd: 'rood',
+}
+
+const TAAK_STATUS_KLEUR: Record<TaakStatus, BadgeKleur> = {
+  te_doen: 'grijs',
+  in_uitvoering: 'blauw',
+  on_hold: 'amber',
+  gereed: 'groen',
+}
+
+/** Sentinel-waarde in het typeveld van de partnermodal: gebruiker voegt een eigen type toe. */
+const NIEUW_TYPE = '__nieuw_type__'
 
 const MAANDEN_KORT = ['jan', 'feb', 'mrt', 'apr', 'mei', 'jun', 'jul', 'aug', 'sep', 'okt', 'nov', 'dec']
 
@@ -119,26 +161,40 @@ function blokTitel(blok: ExternBlok): string {
   return regels.join('\n')
 }
 
-// ---------- Formulier voor bewerken ----------
-
-interface BewerkForm {
-  contactpersoon: string
-  slotsPerWeek: string
-  status: ExternePartij['status']
-  vertragingDagen: string
-  notities: string
+/** Projecten en externe taken die aan één partner gekoppeld zijn. */
+interface Koppelingen {
+  projecten: Project[]
+  taken: { project: Project; taak: Taak }[]
 }
+
+const LEGE_KOPPELINGEN: Koppelingen = { projecten: [], taken: [] }
+
+/** Eén rij in het overzicht "Externe acties": een taak met uitvoering 'extern'. */
+interface ActieRij {
+  project: Project
+  fase: Fase
+  taak: Taak
+}
+
+type ArchiefFilter = 'actief' | 'gearchiveerd' | 'alles'
 
 // ---------- Scherm ----------
 
 export default function ExternePartijen() {
-  const { data, ui, permissies } = useApp()
+  const { data, ui, permissies, dispatch } = useApp()
   const navigate = useNavigate()
+  const { toon } = useToast()
 
   const [tab, setTab] = useState<'spuiters' | 'onderaannemers'>('spuiters')
-  const [typeFilter, setTypeFilter] = useState<'alle' | ExternType>('alle')
+  const [typeFilter, setTypeFilter] = useState<string>('alle')
+  const [archiefFilter, setArchiefFilter] = useState<ArchiefFilter>('actief')
   const [zoek, setZoek] = useState('')
+  const [nieuwOpen, setNieuwOpen] = useState(false)
   const [bewerkPartij, setBewerkPartij] = useState<ExternePartij | null>(null)
+  const [archiveerPartij, setArchiveerPartij] = useState<ExternePartij | null>(null)
+  const [verwijderPartij, setVerwijderPartij] = useState<ExternePartij | null>(null)
+
+  const metUndo = { label: 'Ongedaan maken', onClick: () => dispatch({ type: 'UNDO' }) }
 
   const vandaag = vandaagISO()
   const huidigeWeek = startVanWeek(vandaag)
@@ -175,6 +231,73 @@ export default function ExternePartijen() {
     return map
   }, [kalenderBlokken])
 
+  // Partij-ids die ergens in gebruik zijn (fases, processen, externe taken of units) — verwijderen is dan geblokkeerd.
+  const inGebruikIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const f of data.fases) {
+      if (f.externePartijId) ids.add(f.externePartijId)
+      for (const wp of f.werkpakketten) {
+        if (wp.externePartijId) ids.add(wp.externePartijId)
+        for (const t of wp.taken) if (t.externeActie?.partijId) ids.add(t.externeActie.partijId)
+      }
+    }
+    for (const u of data.units) if (u.bijExternePartijId) ids.add(u.bijExternePartijId)
+    return ids
+  }, [data.fases, data.units])
+
+  // "Gekoppeld aan" per partner: projecten (via fases/processen) en externe taken.
+  const koppelingenPerPartij = useMemo(() => {
+    const map = new Map<string, Koppelingen>()
+    const voorPartij = (id: string): Koppelingen => {
+      let k = map.get(id)
+      if (!k) {
+        k = { projecten: [], taken: [] }
+        map.set(id, k)
+      }
+      return k
+    }
+    const projectVan = new Map(data.projecten.map((p) => [p.id, p]))
+    const voegProject = (partijId: string, project: Project) => {
+      const k = voorPartij(partijId)
+      if (!k.projecten.some((p) => p.id === project.id)) k.projecten.push(project)
+    }
+    for (const fase of data.fases) {
+      const project = projectVan.get(fase.projectId)
+      if (!project) continue
+      if (fase.externePartijId) voegProject(fase.externePartijId, project)
+      for (const wp of fase.werkpakketten) {
+        if (wp.externePartijId) voegProject(wp.externePartijId, project)
+        for (const taak of wp.taken) {
+          if (taak.externeActie?.partijId) voorPartij(taak.externeActie.partijId).taken.push({ project, taak })
+        }
+      }
+    }
+    for (const k of map.values()) k.projecten.sort((a, b) => a.projectnummer.localeCompare(b.projectnummer))
+    return map
+  }, [data.fases, data.projecten])
+
+  // Alle externe taken over alle projecten, gesorteerd op startdatum.
+  const externeActies = useMemo<ActieRij[]>(() => {
+    const rijen: ActieRij[] = []
+    const projectVan = new Map(data.projecten.map((p) => [p.id, p]))
+    for (const fase of data.fases) {
+      const project = projectVan.get(fase.projectId)
+      if (!project) continue
+      for (const wp of fase.werkpakketten) {
+        for (const taak of wp.taken) {
+          if (taak.uitvoering === 'extern') rijen.push({ project, fase, taak })
+        }
+      }
+    }
+    rijen.sort((a, b) => {
+      const sa = a.taak.start ?? '9999-12-31'
+      const sb = b.taak.start ?? '9999-12-31'
+      if (sa !== sb) return sa < sb ? -1 : 1
+      return a.project.projectnummer.localeCompare(b.project.projectnummer)
+    })
+    return rijen
+  }, [data.fases, data.projecten])
+
   // ---------- Tegels ----------
 
   const nuExtern = useMemo(
@@ -187,46 +310,94 @@ export default function ExternePartijen() {
       (b) => b.fase.status !== 'gereed' && b.van <= tot && b.tot >= huidigeWeek,
     )
   }, [externeBlokken, huidigeWeek])
-  const vertraagdePartijen = data.externePartijen.filter((e) => e.vertragingDagen > 0)
+  const vertraagdePartijen = data.externePartijen.filter((e) => !e.gearchiveerd && e.vertragingDagen > 0)
 
   // ---------- Filteren ----------
 
   const gefilterd = useMemo(() => {
     const term = zoek.trim().toLowerCase()
     return data.externePartijen.filter((e) => {
+      if (archiefFilter === 'actief' && e.gearchiveerd) return false
+      if (archiefFilter === 'gearchiveerd' && !e.gearchiveerd) return false
       if (typeFilter !== 'alle' && e.type !== typeFilter) return false
       if (!term) return true
-      return [e.naam, e.specialisme, e.contactpersoon, e.notities ?? '']
+      return [e.naam, e.specialisme, e.contactpersoon, e.email ?? '', e.telefoon ?? '', e.adres ?? '', e.notities ?? '']
         .join(' ')
         .toLowerCase()
         .includes(term)
     })
-  }, [data.externePartijen, typeFilter, zoek])
+  }, [data.externePartijen, typeFilter, archiefFilter, zoek])
 
   const spuiters = gefilterd.filter((e) => e.type === 'spuiter')
   const onderaannemers = gefilterd.filter((e) => e.type !== 'spuiter')
 
-  // Toegewezen (nog niet gerede) projecten per partij, voor de partijkaarten.
-  const toegewezenProjecten = (partijId: string): Project[] => {
-    const ids = new Set<string>()
-    const lijst: Project[] = []
-    for (const b of externeBlokken) {
-      if (b.fase.externePartijId !== partijId || b.fase.status === 'gereed') continue
-      if (b.project.status === 'opgeleverd') continue
-      if (!ids.has(b.project.id)) {
-        ids.add(b.project.id)
-        lijst.push(b.project)
-      }
-    }
-    return lijst.sort((a, b) => a.projectnummer.localeCompare(b.projectnummer))
+  const filtersActief = zoek.trim() !== '' || typeFilter !== 'alle' || archiefFilter !== 'actief'
+
+  // ---------- Partneracties ----------
+
+  const dupliceer = (partij: ExternePartij) => {
+    const kopie: ExternePartij = { ...partij, id: uid('ext'), naam: `${partij.naam} (kopie)`, gearchiveerd: false }
+    dispatch({ type: 'PARTNER_TOEVOEGEN', partij: kopie })
+    toon('succes', `${partij.naam} gedupliceerd als “${kopie.naam}”.`, metUndo)
   }
+
+  const activeer = (partij: ExternePartij) => {
+    dispatch({ type: 'EXTERN_BIJWERKEN', id: partij.id, patch: { gearchiveerd: false } })
+    toon('succes', `${partij.naam} is opnieuw geactiveerd en weer selecteerbaar bij nieuwe koppelingen.`, metUndo)
+  }
+
+  const archiveerBevestigd = () => {
+    if (!archiveerPartij) return
+    dispatch({ type: 'EXTERN_BIJWERKEN', id: archiveerPartij.id, patch: { gearchiveerd: true } })
+    toon('succes', `${archiveerPartij.naam} gearchiveerd. Deze partner is niet meer selecteerbaar bij nieuwe koppelingen.`, metUndo)
+    setArchiveerPartij(null)
+  }
+
+  const verwijderBevestigd = () => {
+    if (!verwijderPartij) return
+    if (inGebruikIds.has(verwijderPartij.id)) {
+      toon('fout', `${verwijderPartij.naam} is inmiddels gekoppeld aan projecten of taken en kan niet worden verwijderd.`)
+      setVerwijderPartij(null)
+      return
+    }
+    dispatch({ type: 'PARTNER_VERWIJDEREN', id: verwijderPartij.id })
+    toon('succes', `${verwijderPartij.naam} verwijderd.`, metUndo)
+    setVerwijderPartij(null)
+  }
+
+  const partijKaartVoor = (partij: ExternePartij, vrijVanaf?: ISODate) => (
+    <PartijKaart
+      key={partij.id}
+      partij={partij}
+      koppelingen={koppelingenPerPartij.get(partij.id) ?? LEGE_KOPPELINGEN}
+      vrijVanaf={vrijVanaf}
+      magBewerken={permissies.externBeheren}
+      verwijderbaar={!inGebruikIds.has(partij.id)}
+      onBewerk={() => setBewerkPartij(partij)}
+      onDupliceer={() => dupliceer(partij)}
+      onArchiveer={() => setArchiveerPartij(partij)}
+      onActiveer={() => activeer(partij)}
+      onVerwijder={() => setVerwijderPartij(partij)}
+      onOpenProject={(id) => navigate(`/projecten/${id}`)}
+    />
+  )
 
   return (
     <div className="p-6">
       <PaginaKop
         titel="Externe partijen"
         uitleg="Spuiterkalender met slotbewaking en het overzicht van alle externe spuiters en onderaannemers."
-        rechts={<Badge kleur="grijs">{data.externePartijen.length} partijen</Badge>}
+        rechts={
+          <>
+            <Badge kleur="grijs">{data.externePartijen.length} partijen</Badge>
+            {permissies.externBeheren && (
+              <Knop variant="primary" onClick={() => setNieuwOpen(true)}>
+                <Plus size={16} />
+                Nieuwe externe partner
+              </Knop>
+            )}
+          </>
+        }
       />
 
       {/* Tegels */}
@@ -282,7 +453,7 @@ export default function ExternePartijen() {
         </div>
         <Keuze
           value={typeFilter}
-          onChange={(e) => setTypeFilter(e.target.value as 'alle' | ExternType)}
+          onChange={(e) => setTypeFilter(e.target.value)}
           className="!w-auto"
           title="Filter op type externe partij"
         >
@@ -292,14 +463,32 @@ export default function ExternePartijen() {
               {label}
             </option>
           ))}
+          {data.partnerTypes
+            .filter((t) => !(t in EXTERN_TYPE_LABELS))
+            .map((t) => (
+              <option key={t} value={t}>
+                {externTypeLabel(t)}
+              </option>
+            ))}
         </Keuze>
-        {(zoek.trim() !== '' || typeFilter !== 'alle') && (
+        <Keuze
+          value={archiefFilter}
+          onChange={(e) => setArchiefFilter(e.target.value as ArchiefFilter)}
+          className="!w-auto"
+          title="Toon actieve of gearchiveerde partners. Gearchiveerde partners zijn niet meer selecteerbaar bij nieuwe koppelingen."
+        >
+          <option value="actief">Actief</option>
+          <option value="gearchiveerd">Gearchiveerd</option>
+          <option value="alles">Alles</option>
+        </Keuze>
+        {filtersActief && (
           <Knop
             klein
             variant="ghost"
             onClick={() => {
               setZoek('')
               setTypeFilter('alle')
+              setArchiefFilter('actief')
             }}
           >
             Filters wissen
@@ -383,7 +572,7 @@ export default function ExternePartijen() {
                           isHuidig ? 'bg-brand-50' : ''
                         }`}
                       >
-                        <div className="text-[10px] tracking-wide text-slate-400 uppercase">{nieuweMaand ? maandKort(maandag) : ' '}</div>
+                        <div className="text-[10px] tracking-wide text-slate-400 uppercase">{nieuweMaand ? maandKort(maandag) : ' '}</div>
                         <div
                           className={`text-xs font-medium tabular-nums ${
                             isHuidig ? 'font-semibold text-brand-800' : 'text-slate-600'
@@ -420,17 +609,9 @@ export default function ExternePartijen() {
           {/* Partijkaarten spuiters */}
           {spuiters.length === 0 ? null : (
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-              {spuiters.map((partij) => (
-                <PartijKaart
-                  key={partij.id}
-                  partij={partij}
-                  projecten={toegewezenProjecten(partij.id)}
-                  vrijVanaf={eersteVrijeDatum(blokkenPerPartij.get(partij.id) ?? [], partij.slotsPerWeek)}
-                  magBewerken={permissies.externBeheren}
-                  onBewerk={() => setBewerkPartij(partij)}
-                  onOpenProject={(id) => navigate(`/projecten/${id}`)}
-                />
-              ))}
+              {spuiters.map((partij) =>
+                partijKaartVoor(partij, eersteVrijeDatum(blokkenPerPartij.get(partij.id) ?? [], partij.slotsPerWeek)),
+              )}
             </div>
           )}
         </div>
@@ -445,26 +626,66 @@ export default function ExternePartijen() {
             />
           ) : (
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-              {onderaannemers.map((partij) => (
-                <PartijKaart
-                  key={partij.id}
-                  partij={partij}
-                  projecten={toegewezenProjecten(partij.id)}
-                  vrijVanaf={eersteVrijeDatum(
+              {onderaannemers.map((partij) =>
+                partijKaartVoor(
+                  partij,
+                  eersteVrijeDatum(
                     externeBlokken.filter((b) => b.fase.externePartijId === partij.id),
                     partij.slotsPerWeek,
-                  )}
-                  magBewerken={permissies.externBeheren}
-                  onBewerk={() => setBewerkPartij(partij)}
-                  onOpenProject={(id) => navigate(`/projecten/${id}`)}
-                />
-              ))}
+                  ),
+                ),
+              )}
             </div>
           )}
         </div>
       )}
 
-      <BewerkModal partij={bewerkPartij} onSluiten={() => setBewerkPartij(null)} />
+      {/* Externe acties over alle projecten */}
+      <div className="mt-5">
+        <ExterneActiesKaart
+          rijen={externeActies}
+          partijen={data.externePartijen}
+          onOpenProject={(id) => navigate(`/projecten/${id}`)}
+        />
+      </div>
+
+      {(nieuwOpen || bewerkPartij !== null) && (
+        <PartnerModal
+          key={bewerkPartij?.id ?? 'nieuw'}
+          partij={bewerkPartij}
+          onSluiten={() => {
+            setNieuwOpen(false)
+            setBewerkPartij(null)
+          }}
+        />
+      )}
+
+      <BevestigDialog
+        open={archiveerPartij !== null}
+        titel="Partner archiveren"
+        tekst={
+          archiveerPartij
+            ? `Weet je zeker dat je ${archiveerPartij.naam} wilt archiveren? Gearchiveerde partners zijn niet meer selecteerbaar bij nieuwe koppelingen; bestaande planningen en taken blijven ongewijzigd. Je kunt de partner later opnieuw activeren.`
+            : undefined
+        }
+        bevestigLabel="Archiveren"
+        onBevestig={archiveerBevestigd}
+        onAnnuleer={() => setArchiveerPartij(null)}
+      />
+
+      <BevestigDialog
+        open={verwijderPartij !== null}
+        titel="Partner verwijderen"
+        gevaarlijk
+        tekst={
+          verwijderPartij
+            ? `Weet je zeker dat je ${verwijderPartij.naam} definitief wilt verwijderen? Deze partner is nergens gekoppeld; het verwijderen kan direct via de melding ongedaan worden gemaakt.`
+            : undefined
+        }
+        bevestigLabel="Verwijderen"
+        onBevestig={verwijderBevestigd}
+        onAnnuleer={() => setVerwijderPartij(null)}
+      />
     </div>
   )
 }
@@ -527,8 +748,9 @@ function SpuiterRij({
     <>
       {/* Hoofdrij met projectblokjes */}
       <div className="sticky left-0 z-10 flex min-h-14 flex-col justify-center gap-1 border-t border-slate-200 bg-white px-3 py-1.5">
-        <span className="truncate text-xs font-semibold text-slate-800" title={spuiter.naam}>
+        <span className="flex items-center gap-1.5 truncate text-xs font-semibold text-slate-800" title={spuiter.naam}>
           {spuiter.naam}
+          {spuiter.gearchiveerd && <Badge kleur="amber">Gearchiveerd</Badge>}
         </span>
         {vrijVanaf ? (
           <span className="w-fit">
@@ -619,41 +841,171 @@ function SpuiterRij({
   )
 }
 
+// ---------- Rij-actiemenu (kebab) ----------
+
+interface MenuItem {
+  label: string
+  icon?: ReactNode
+  onClick: () => void
+  disabled?: boolean
+  title?: string
+  gevaarlijk?: boolean
+}
+
+/** Compact acties-menu met vaste positionering (ontsnapt aan kaart- en tabel-overflow). */
+function RijMenu({ items, titel = 'Acties' }: { items: MenuItem[]; titel?: string }) {
+  const [open, setOpen] = useState(false)
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const [coord, setCoord] = useState<{ top: number; left: number } | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const herpositioneer = () => {
+      const r = btnRef.current?.getBoundingClientRect()
+      if (r) setCoord({ top: r.bottom + 4, left: r.right })
+    }
+    herpositioneer()
+    const opBuitenklik = (e: MouseEvent) => {
+      if (menuRef.current?.contains(e.target as Node) || btnRef.current?.contains(e.target as Node)) return
+      setOpen(false)
+    }
+    const opToets = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    window.addEventListener('mousedown', opBuitenklik)
+    window.addEventListener('resize', herpositioneer)
+    window.addEventListener('scroll', herpositioneer, true)
+    window.addEventListener('keydown', opToets)
+    return () => {
+      window.removeEventListener('mousedown', opBuitenklik)
+      window.removeEventListener('resize', herpositioneer)
+      window.removeEventListener('scroll', herpositioneer, true)
+      window.removeEventListener('keydown', opToets)
+    }
+  }, [open])
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        title={titel}
+        onClick={(e) => {
+          e.stopPropagation()
+          setOpen((o) => !o)
+        }}
+        className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+      >
+        <MoreVertical size={16} />
+      </button>
+      {open && coord && (
+        <div
+          ref={menuRef}
+          onClick={(e) => e.stopPropagation()}
+          style={{ position: 'fixed', top: coord.top, left: coord.left, transform: 'translateX(-100%)' }}
+          className="z-[70] w-64 overflow-hidden rounded-md border border-slate-200 bg-white py-1 shadow-lg"
+        >
+          {items.map((it, i) => (
+            <button
+              key={i}
+              disabled={it.disabled}
+              title={it.title}
+              onClick={(e) => {
+                e.stopPropagation()
+                if (it.disabled) return
+                setOpen(false)
+                it.onClick()
+              }}
+              className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors ${
+                it.disabled
+                  ? 'cursor-not-allowed text-slate-300'
+                  : it.gevaarlijk
+                    ? 'text-red-600 hover:bg-red-50'
+                    : 'text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              <span className="shrink-0">{it.icon}</span>
+              <span className="flex-1">{it.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </>
+  )
+}
+
 // ---------- Partijkaart ----------
 
 function PartijKaart({
   partij,
-  projecten,
+  koppelingen,
   vrijVanaf,
   magBewerken,
+  verwijderbaar,
   onBewerk,
+  onDupliceer,
+  onArchiveer,
+  onActiveer,
+  onVerwijder,
   onOpenProject,
 }: {
   partij: ExternePartij
-  projecten: Project[]
+  koppelingen: Koppelingen
   vrijVanaf?: ISODate
   magBewerken: boolean
+  verwijderbaar: boolean
   onBewerk: () => void
+  onDupliceer: () => void
+  onArchiveer: () => void
+  onActiveer: () => void
+  onVerwijder: () => void
   onOpenProject: (projectId: string) => void
 }) {
+  const doorlooptijd = partij.standaardDoorlooptijdDagen
   return (
-    <Kaart className="flex flex-col p-4">
+    <Kaart className={`flex flex-col p-4 ${partij.gearchiveerd ? 'opacity-80' : ''}`}>
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="truncate text-sm font-semibold text-slate-800">{partij.naam}</span>
-            <Badge kleur={partij.type === 'spuiter' ? 'paars' : 'blauw'}>{EXTERN_TYPE_LABELS[partij.type]}</Badge>
+            <Badge kleur={partij.type === 'spuiter' ? 'paars' : 'blauw'}>{externTypeLabel(partij.type)}</Badge>
+            {partij.gearchiveerd && (
+              <Badge kleur="amber" title="Gearchiveerd: niet meer selecteerbaar bij nieuwe koppelingen. Via het actiemenu opnieuw te activeren.">
+                Gearchiveerd
+              </Badge>
+            )}
           </div>
           <p className="mt-0.5 flex items-center gap-1 text-xs text-slate-500">
             <Building2 size={13} className="shrink-0 text-slate-400" />
-            {partij.specialisme}
+            {partij.specialisme || '—'}
           </p>
         </div>
         {magBewerken && (
-          <Knop klein variant="ghost" onClick={onBewerk} title={`Gegevens van ${partij.naam} bewerken`}>
-            <Pencil size={14} />
-            Bewerken
-          </Knop>
+          <RijMenu
+            titel={`Acties voor ${partij.naam}`}
+            items={[
+              { label: 'Bewerken', icon: <Pencil size={14} />, onClick: onBewerk },
+              { label: 'Dupliceren', icon: <Copy size={14} />, onClick: onDupliceer },
+              partij.gearchiveerd
+                ? { label: 'Opnieuw activeren', icon: <ArchiveRestore size={14} />, onClick: onActiveer }
+                : {
+                    label: 'Archiveren',
+                    icon: <Archive size={14} />,
+                    onClick: onArchiveer,
+                    title: 'Gearchiveerde partners zijn niet meer selecteerbaar bij nieuwe koppelingen.',
+                  },
+              {
+                label: 'Verwijderen',
+                icon: <Trash2 size={14} />,
+                gevaarlijk: true,
+                disabled: !verwijderbaar,
+                title: verwijderbaar
+                  ? undefined
+                  : 'Deze partner is gekoppeld aan projecten of taken en kan niet worden verwijderd — archiveer in plaats daarvan.',
+                onClick: onVerwijder,
+              },
+            ]}
+          />
         )}
       </div>
 
@@ -666,8 +1018,69 @@ function PartijKaart({
         <span className="text-slate-500">Contactpersoon</span>
         <span className="flex items-center gap-1 text-slate-700">
           <User size={13} className="text-slate-400" />
-          {partij.contactpersoon}
+          {partij.contactpersoon || '—'}
         </span>
+
+        {partij.email && (
+          <>
+            <span className="text-slate-500">E-mail</span>
+            <a
+              href={`mailto:${partij.email}`}
+              className="flex min-w-0 items-center gap-1 text-slate-700 hover:text-brand-700 hover:underline"
+              title={`E-mail sturen naar ${partij.email}`}
+            >
+              <Mail size={13} className="shrink-0 text-slate-400" />
+              <span className="truncate">{partij.email}</span>
+            </a>
+          </>
+        )}
+
+        {partij.telefoon && (
+          <>
+            <span className="text-slate-500">Telefoon</span>
+            <a
+              href={`tel:${partij.telefoon}`}
+              className="flex items-center gap-1 text-slate-700 hover:text-brand-700 hover:underline"
+              title={`Bellen met ${partij.naam}`}
+            >
+              <Phone size={13} className="shrink-0 text-slate-400" />
+              {partij.telefoon}
+            </a>
+          </>
+        )}
+
+        {partij.adres && (
+          <>
+            <span className="text-slate-500">Adres</span>
+            <span className="flex min-w-0 items-center gap-1 text-slate-700" title={partij.adres}>
+              <MapPin size={13} className="shrink-0 text-slate-400" />
+              <span className="truncate">{partij.adres}</span>
+            </span>
+          </>
+        )}
+
+        {partij.beschikbaarheid && (
+          <>
+            <span className="text-slate-500">Beschikbaarheid</span>
+            <span className="flex items-start gap-1 text-slate-700">
+              <CalendarClock size={13} className="mt-0.5 shrink-0 text-slate-400" />
+              {partij.beschikbaarheid}
+            </span>
+          </>
+        )}
+
+        {doorlooptijd != null && (
+          <>
+            <span className="flex items-center gap-1 text-slate-500">
+              Doorlooptijd
+              <InfoTip tekst="Standaard doorlooptijd in dagen die deze partner nodig heeft voor een opdracht." />
+            </span>
+            <span className="flex items-center gap-1 tabular-nums text-slate-700">
+              <Timer size={13} className="text-slate-400" />
+              {doorlooptijd} {doorlooptijd === 1 ? 'dag' : 'dagen'}
+            </span>
+          </>
+        )}
 
         <span className="flex items-center gap-1 text-slate-500">
           Slots per week
@@ -697,22 +1110,43 @@ function PartijKaart({
       </div>
 
       <div className="mt-3">
-        <div className="text-[11px] font-medium tracking-wide text-slate-500 uppercase">Toegewezen projecten</div>
-        {projecten.length === 0 ? (
-          <p className="mt-1 text-xs text-slate-400">Geen actuele projecten toegewezen.</p>
+        <div className="flex items-center gap-1 text-[11px] font-medium tracking-wide text-slate-500 uppercase">
+          Gekoppeld aan
+          <InfoTip tekst="Projecten met een fase of proces bij deze partner, plus alle externe taken die aan deze partner zijn uitbesteed. Klik om het project te openen." />
+        </div>
+        {koppelingen.projecten.length === 0 && koppelingen.taken.length === 0 ? (
+          <p className="mt-1 text-xs text-slate-400">Geen projecten of externe taken gekoppeld.</p>
         ) : (
-          <div className="mt-1 flex flex-wrap gap-1">
-            {projecten.map((p) => (
-              <button
-                key={p.id}
-                onClick={() => onOpenProject(p.id)}
-                title={`${p.projectnummer} · ${p.naam} (${p.klant})`}
-                className="cursor-pointer rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[11px] font-medium text-slate-700 transition-colors hover:border-brand-200 hover:bg-brand-50 hover:text-brand-800"
-              >
-                {p.projectnummer}
-              </button>
-            ))}
-          </div>
+          <>
+            {koppelingen.projecten.length > 0 && (
+              <div className="mt-1 flex flex-wrap gap-1">
+                {koppelingen.projecten.map((p) => (
+                  <button
+                    key={p.id}
+                    onClick={() => onOpenProject(p.id)}
+                    title={`${p.projectnummer} · ${p.naam} (${p.klant})`}
+                    className="cursor-pointer rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[11px] font-medium text-slate-700 transition-colors hover:border-brand-200 hover:bg-brand-50 hover:text-brand-800"
+                  >
+                    {p.projectnummer}
+                  </button>
+                ))}
+              </div>
+            )}
+            {koppelingen.taken.length > 0 && (
+              <div className="mt-1 flex flex-wrap gap-1">
+                {koppelingen.taken.map(({ project, taak }) => (
+                  <button
+                    key={taak.id}
+                    onClick={() => onOpenProject(project.id)}
+                    title={`Externe taak · ${taak.naam} (${project.projectnummer} · ${project.naam})`}
+                    className="max-w-full cursor-pointer truncate rounded border border-sky-200 bg-sky-50 px-1.5 py-0.5 text-[11px] font-medium text-sky-800 transition-colors hover:border-sky-300 hover:bg-sky-100"
+                  >
+                    {project.projectnummer} · {taak.naam}
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
         )}
       </div>
 
@@ -723,68 +1157,160 @@ function PartijKaart({
   )
 }
 
-// ---------- Bewerkmodal ----------
+// ---------- Partnermodal (nieuw & bewerken) ----------
 
-function BewerkModal({ partij, onSluiten }: { partij: ExternePartij | null; onSluiten: () => void }) {
-  const { dispatch, permissies } = useApp()
-  const { toon } = useToast()
-  const [form, setForm] = useState<BewerkForm | null>(null)
-  const [fouten, setFouten] = useState<Partial<Record<keyof BewerkForm, string>>>({})
-  const [partijId, setPartijId] = useState<string | null>(null)
+interface PartnerForm {
+  naam: string
+  type: string
+  nieuwType: string
+  specialisme: string
+  contactpersoon: string
+  email: string
+  telefoon: string
+  adres: string
+  beschikbaarheid: string
+  slotsPerWeek: string
+  standaardDoorlooptijdDagen: string
+  status: ExternePartij['status']
+  vertragingDagen: string
+  notities: string
+}
 
-  // Formulier vullen zodra een (andere) partij geopend wordt.
-  if (partij && partij.id !== partijId) {
-    setPartijId(partij.id)
-    setForm({
+type PartnerFout = 'naam' | 'nieuwType' | 'email' | 'slotsPerWeek' | 'standaardDoorlooptijdDagen' | 'vertragingDagen'
+
+function initPartnerForm(partij: ExternePartij | null): PartnerForm {
+  if (partij) {
+    return {
+      naam: partij.naam,
+      type: partij.type,
+      nieuwType: '',
+      specialisme: partij.specialisme,
       contactpersoon: partij.contactpersoon,
+      email: partij.email ?? '',
+      telefoon: partij.telefoon ?? '',
+      adres: partij.adres ?? '',
+      beschikbaarheid: partij.beschikbaarheid ?? '',
       slotsPerWeek: String(partij.slotsPerWeek),
+      standaardDoorlooptijdDagen: partij.standaardDoorlooptijdDagen != null ? String(partij.standaardDoorlooptijdDagen) : '',
       status: partij.status,
       vertragingDagen: String(partij.vertragingDagen),
       notities: partij.notities ?? '',
-    })
-    setFouten({})
+    }
   }
-  if (!partij && partijId !== null) {
-    setPartijId(null)
-    setForm(null)
+  return {
+    naam: '',
+    type: 'spuiter',
+    nieuwType: '',
+    specialisme: '',
+    contactpersoon: '',
+    email: '',
+    telefoon: '',
+    adres: '',
+    beschikbaarheid: '',
+    slotsPerWeek: '1',
+    standaardDoorlooptijdDagen: '',
+    status: 'beschikbaar',
+    vertragingDagen: '0',
+    notities: '',
   }
+}
 
-  if (!partij || !form || !permissies.externBeheren) return null
+function PartnerModal({ partij, onSluiten }: { partij: ExternePartij | null; onSluiten: () => void }) {
+  const { data, dispatch, permissies } = useApp()
+  const { toon } = useToast()
+  const [form, setForm] = useState<PartnerForm>(() => initPartnerForm(partij))
+  const [fouten, setFouten] = useState<Partial<Record<PartnerFout, string>>>({})
 
-  const zet = <K extends keyof BewerkForm>(veld: K, waarde: BewerkForm[K]) =>
-    setForm((f) => (f ? { ...f, [veld]: waarde } : f))
+  const metUndo = { label: 'Ongedaan maken', onClick: () => dispatch({ type: 'UNDO' }) }
+
+  const typeOpties = useMemo(() => {
+    const opties: { waarde: string; label: string }[] = Object.entries(EXTERN_TYPE_LABELS).map(([waarde, label]) => ({
+      waarde,
+      label,
+    }))
+    for (const t of data.partnerTypes) if (!opties.some((o) => o.waarde === t)) opties.push({ waarde: t, label: externTypeLabel(t) })
+    if (partij && !opties.some((o) => o.waarde === partij.type)) opties.push({ waarde: partij.type, label: externTypeLabel(partij.type) })
+    return opties
+  }, [data.partnerTypes, partij])
+
+  if (!permissies.externBeheren) return null
+
+  const zet = <K extends keyof PartnerForm>(veld: K, waarde: PartnerForm[K]) => setForm((f) => ({ ...f, [veld]: waarde }))
 
   const opslaan = () => {
-    const nieuweFouten: Partial<Record<keyof BewerkForm, string>> = {}
-    const contactpersoon = form.contactpersoon.trim()
-    if (!contactpersoon) nieuweFouten.contactpersoon = 'Vul een contactpersoon in.'
+    const nieuweFouten: Partial<Record<PartnerFout, string>> = {}
+
+    const naam = form.naam.trim()
+    if (!naam) nieuweFouten.naam = 'Vul een bedrijfsnaam in.'
+
+    let type = form.type
+    let typeIsNieuw = false
+    if (form.type === NIEUW_TYPE) {
+      const invoer = form.nieuwType.trim()
+      if (!invoer) {
+        nieuweFouten.nieuwType = 'Vul een naam voor het nieuwe partnertype in.'
+      } else {
+        // Hergebruik een bestaand type met dezelfde naam (hoofdletterongevoelig) in plaats van een duplicaat.
+        const bekendeKey = Object.entries(EXTERN_TYPE_LABELS).find(([, label]) => label.toLowerCase() === invoer.toLowerCase())?.[0]
+        const bestaandEigen = data.partnerTypes.find((t) => t.toLowerCase() === invoer.toLowerCase())
+        type = bekendeKey ?? bestaandEigen ?? invoer
+        typeIsNieuw = !bekendeKey && !bestaandEigen
+      }
+    }
+
     const slots = Number(form.slotsPerWeek)
-    if (!Number.isFinite(slots) || slots < 1) nieuweFouten.slotsPerWeek = 'Slots per week moet een getal van minimaal 1 zijn.'
+    if (form.slotsPerWeek.trim() === '' || !Number.isFinite(slots) || slots < 0)
+      nieuweFouten.slotsPerWeek = 'Slots per week moet een getal van 0 of meer zijn.'
+
     const vertraging = Number(form.vertragingDagen)
     if (form.vertragingDagen.trim() === '' || !Number.isFinite(vertraging) || vertraging < 0)
       nieuweFouten.vertragingDagen = 'Vul een vertraging van 0 of meer werkdagen in.'
+
+    let doorlooptijd: number | undefined
+    if (form.standaardDoorlooptijdDagen.trim() !== '') {
+      const dl = Number(form.standaardDoorlooptijdDagen)
+      if (!Number.isFinite(dl) || dl < 0) nieuweFouten.standaardDoorlooptijdDagen = 'Vul een doorlooptijd van 0 of meer dagen in.'
+      else doorlooptijd = Math.round(dl)
+    }
+
+    const email = form.email.trim()
+    if (email !== '' && !/^\S+@\S+\.\S+$/.test(email)) nieuweFouten.email = 'Vul een geldig e-mailadres in.'
+
     setFouten(nieuweFouten)
     if (Object.keys(nieuweFouten).length > 0) return
 
-    const nieuweVertraging = Math.round(vertraging)
-    dispatch({
-      type: 'EXTERN_BIJWERKEN',
-      id: partij.id,
-      patch: {
-        contactpersoon,
-        slotsPerWeek: Math.round(slots),
-        status: form.status,
-        vertragingDagen: nieuweVertraging,
-        notities: form.notities.trim() || undefined,
-      },
-    })
-    if (nieuweVertraging !== partij.vertragingDagen) {
-      toon(
-        nieuweVertraging > 0 ? 'waarschuwing' : 'succes',
-        `${partij.naam} bijgewerkt. Vertraging is nu ${nieuweVertraging} werkdag(en); de projectrisico's zijn automatisch bijgewerkt.`,
-      )
+    if (typeIsNieuw) dispatch({ type: 'PARTNERTYPE_TOEVOEGEN', naam: type })
+
+    const velden: Omit<ExternePartij, 'id' | 'gearchiveerd'> = {
+      naam,
+      type,
+      specialisme: form.specialisme.trim(),
+      contactpersoon: form.contactpersoon.trim(),
+      email: email || undefined,
+      telefoon: form.telefoon.trim() || undefined,
+      adres: form.adres.trim() || undefined,
+      beschikbaarheid: form.beschikbaarheid.trim() || undefined,
+      slotsPerWeek: Math.round(slots),
+      standaardDoorlooptijdDagen: doorlooptijd,
+      vertragingDagen: Math.round(vertraging),
+      status: form.status,
+      notities: form.notities.trim() || undefined,
+    }
+
+    if (partij) {
+      dispatch({ type: 'EXTERN_BIJWERKEN', id: partij.id, patch: velden })
+      if (velden.vertragingDagen !== partij.vertragingDagen) {
+        toon(
+          velden.vertragingDagen > 0 ? 'waarschuwing' : 'succes',
+          `${naam} bijgewerkt. Vertraging is nu ${velden.vertragingDagen} werkdag(en); de projectrisico's zijn automatisch bijgewerkt.`,
+          metUndo,
+        )
+      } else {
+        toon('succes', `Gegevens van ${naam} bijgewerkt.`, metUndo)
+      }
     } else {
-      toon('succes', `Gegevens van ${partij.naam} bijgewerkt.`)
+      dispatch({ type: 'PARTNER_TOEVOEGEN', partij: { id: uid('ext'), gearchiveerd: false, ...velden } })
+      toon('succes', `${naam} toegevoegd als externe partner.`, metUndo)
     }
     onSluiten()
   }
@@ -792,35 +1318,109 @@ function BewerkModal({ partij, onSluiten }: { partij: ExternePartij | null; onSl
   return (
     <Modal
       open
-      titel={`${partij.naam} bewerken`}
+      titel={partij ? `${partij.naam} bewerken` : 'Nieuwe externe partner'}
       onSluiten={onSluiten}
       voettekst={
         <>
           <Knop onClick={onSluiten}>Annuleren</Knop>
           <Knop variant="primary" onClick={opslaan}>
-            Opslaan
+            {partij ? 'Opslaan' : 'Partner toevoegen'}
           </Knop>
         </>
       }
     >
       <div className="grid gap-3">
-        <Veld label="Contactpersoon" verplicht fout={fouten.contactpersoon}>
+        <div className="grid grid-cols-2 gap-3">
+          <Veld label="Bedrijfsnaam" verplicht fout={fouten.naam}>
+            <Invoer
+              autoFocus
+              value={form.naam}
+              onChange={(e) => zet('naam', e.target.value)}
+              placeholder="Bijv. Coatingcenter Venlo"
+            />
+          </Veld>
+          <Veld label="Partnertype" verplicht>
+            <Keuze value={form.type} onChange={(e) => zet('type', e.target.value)}>
+              {typeOpties.map((o) => (
+                <option key={o.waarde} value={o.waarde}>
+                  {o.label}
+                </option>
+              ))}
+              <option value={NIEUW_TYPE}>Nieuw type…</option>
+            </Keuze>
+          </Veld>
+        </div>
+        {form.type === NIEUW_TYPE && (
+          <Veld label="Naam nieuw partnertype" verplicht fout={fouten.nieuwType}>
+            <Invoer
+              value={form.nieuwType}
+              onChange={(e) => zet('nieuwType', e.target.value)}
+              placeholder="Bijv. Zonweringspecialist"
+            />
+          </Veld>
+        )}
+        <Veld label="Specialisme">
           <Invoer
-            value={form.contactpersoon}
-            onChange={(e) => zet('contactpersoon', e.target.value)}
-            placeholder="Naam contactpersoon"
+            value={form.specialisme}
+            onChange={(e) => zet('specialisme', e.target.value)}
+            placeholder="Bijv. spuitwerk trailers & chassis"
+          />
+        </Veld>
+        <div className="grid grid-cols-2 gap-3">
+          <Veld label="Contactpersoon">
+            <Invoer
+              value={form.contactpersoon}
+              onChange={(e) => zet('contactpersoon', e.target.value)}
+              placeholder="Naam contactpersoon"
+            />
+          </Veld>
+          <Veld label="E-mailadres" fout={fouten.email}>
+            <Invoer
+              type="email"
+              value={form.email}
+              onChange={(e) => zet('email', e.target.value)}
+              placeholder="naam@bedrijf.nl"
+            />
+          </Veld>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <Veld label="Telefoonnummer">
+            <Invoer value={form.telefoon} onChange={(e) => zet('telefoon', e.target.value)} placeholder="Bijv. 040-1234567" />
+          </Veld>
+          <Veld label="Adres">
+            <Invoer value={form.adres} onChange={(e) => zet('adres', e.target.value)} placeholder="Straat 1, Plaats" />
+          </Veld>
+        </div>
+        <Veld label="Beschikbaarheid">
+          <Invoer
+            value={form.beschikbaarheid}
+            onChange={(e) => zet('beschikbaarheid', e.target.value)}
+            placeholder="Bijv. ma t/m vr, aanvraag 3 dagen vooraf"
           />
         </Veld>
         <div className="grid grid-cols-2 gap-3">
           <Veld label="Slots per week" verplicht fout={fouten.slotsPerWeek}>
             <Invoer
               type="number"
-              min={1}
+              min={0}
               step={1}
               value={form.slotsPerWeek}
               onChange={(e) => zet('slotsPerWeek', e.target.value)}
+              title="Maximale capaciteit: het aantal projecten dat deze partner gelijktijdig per week kan behandelen."
             />
           </Veld>
+          <Veld label="Standaard doorlooptijd (dagen)" fout={fouten.standaardDoorlooptijdDagen}>
+            <Invoer
+              type="number"
+              min={0}
+              step={1}
+              value={form.standaardDoorlooptijdDagen}
+              onChange={(e) => zet('standaardDoorlooptijdDagen', e.target.value)}
+              placeholder="Optioneel"
+            />
+          </Veld>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
           <Veld label="Status" verplicht>
             <Keuze value={form.status} onChange={(e) => zet('status', e.target.value as ExternePartij['status'])}>
               {(Object.keys(PARTIJ_STATUS_LABELS) as ExternePartij['status'][]).map((s) => (
@@ -830,19 +1430,19 @@ function BewerkModal({ partij, onSluiten }: { partij: ExternePartij | null; onSl
               ))}
             </Keuze>
           </Veld>
+          <Veld label="Actuele vertraging (werkdagen)" verplicht fout={fouten.vertragingDagen}>
+            <Invoer
+              type="number"
+              min={0}
+              step={1}
+              value={form.vertragingDagen}
+              onChange={(e) => zet('vertragingDagen', e.target.value)}
+            />
+          </Veld>
         </div>
-        <Veld label="Vertraging (werkdagen)" verplicht fout={fouten.vertragingDagen}>
-          <Invoer
-            type="number"
-            min={0}
-            step={1}
-            value={form.vertragingDagen}
-            onChange={(e) => zet('vertragingDagen', e.target.value)}
-          />
-        </Veld>
         <p className="-mt-1.5 text-[11px] text-slate-400">
           Een gemelde vertraging telt automatisch mee in de risicobepaling van alle projecten met een lopende of geplande fase
-          bij deze partij.
+          bij deze partner.
         </p>
         <Veld label="Notities">
           <Tekstvak
@@ -854,5 +1454,200 @@ function BewerkModal({ partij, onSluiten }: { partij: ExternePartij | null; onSl
         </Veld>
       </div>
     </Modal>
+  )
+}
+
+// ---------- Externe acties (alle projecten) ----------
+
+function ExterneActiesKaart({
+  rijen,
+  partijen,
+  onOpenProject,
+}: {
+  rijen: ActieRij[]
+  partijen: ExternePartij[]
+  onOpenProject: (projectId: string) => void
+}) {
+  const [partijFilter, setPartijFilter] = useState<string>('alle')
+  const [statusFilter, setStatusFilter] = useState<'alle' | ExterneActieStatus>('alle')
+
+  const partijOpties = useMemo(() => {
+    const ids = new Set<string>()
+    for (const r of rijen) if (r.taak.externeActie?.partijId) ids.add(r.taak.externeActie.partijId)
+    return partijen.filter((p) => ids.has(p.id)).sort((a, b) => a.naam.localeCompare(b.naam, 'nl'))
+  }, [rijen, partijen])
+  const heeftZonderPartner = rijen.some((r) => !r.taak.externeActie?.partijId)
+
+  const zichtbaar = useMemo(
+    () =>
+      rijen.filter((r) => {
+        const pid = r.taak.externeActie?.partijId
+        if (partijFilter === 'geen' && pid) return false
+        if (partijFilter !== 'alle' && partijFilter !== 'geen' && pid !== partijFilter) return false
+        const status = r.taak.externeActie?.status ?? 'niet_aangevraagd'
+        if (statusFilter !== 'alle' && status !== statusFilter) return false
+        return true
+      }),
+    [rijen, partijFilter, statusFilter],
+  )
+
+  const filtersActief = partijFilter !== 'alle' || statusFilter !== 'alle'
+
+  return (
+    <Kaart>
+      <KaartKop
+        titel={
+          <>
+            <ClipboardList size={16} className="text-sky-700" />
+            Externe acties
+            <Badge kleur="grijs">{rijen.length}</Badge>
+          </>
+        }
+        uitleg="Alle taken die in de detailplanning van een project als “Extern” zijn gemarkeerd, met de status van de aanvraag en uitvoering bij de externe partner."
+        rechts={
+          rijen.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <Keuze
+                value={partijFilter}
+                onChange={(e) => setPartijFilter(e.target.value)}
+                className="!w-auto"
+                title="Filter op externe partner"
+              >
+                <option value="alle">Alle partners</option>
+                {partijOpties.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.naam}
+                  </option>
+                ))}
+                {heeftZonderPartner && <option value="geen">Zonder partner</option>}
+              </Keuze>
+              <Keuze
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value as 'alle' | ExterneActieStatus)}
+                className="!w-auto"
+                title="Filter op actiestatus"
+              >
+                <option value="alle">Alle actiestatussen</option>
+                {Object.entries(EXTERNE_ACTIE_LABELS).map(([waarde, label]) => (
+                  <option key={waarde} value={waarde}>
+                    {label}
+                  </option>
+                ))}
+              </Keuze>
+              {filtersActief && (
+                <Knop
+                  klein
+                  variant="ghost"
+                  onClick={() => {
+                    setPartijFilter('alle')
+                    setStatusFilter('alle')
+                  }}
+                >
+                  Wissen
+                </Knop>
+              )}
+            </div>
+          ) : undefined
+        }
+      />
+
+      {rijen.length === 0 ? (
+        <div className="p-4">
+          <LegeStaat
+            titel="Nog geen externe acties"
+            tekst="Markeer een taak als “Extern” in de detailplanning van een project; alle externe uitbestedingen verschijnen dan automatisch in dit overzicht."
+          />
+        </div>
+      ) : zichtbaar.length === 0 ? (
+        <div className="p-4">
+          <LegeStaat
+            titel="Geen externe acties gevonden"
+            tekst="Er zijn geen externe acties die aan de huidige filters voldoen. Pas de partner- of statusfilter aan."
+          />
+        </div>
+      ) : (
+        <div className="scrollbar-dun overflow-x-auto">
+          <table className="w-full min-w-[920px] text-sm">
+            <thead>
+              <tr className="border-b border-slate-200 text-left text-xs font-semibold tracking-wide text-slate-500 uppercase">
+                <th className="px-3 py-2.5">Project</th>
+                <th className="px-3 py-2.5">Taak</th>
+                <th className="px-3 py-2.5">Partner</th>
+                <th className="px-3 py-2.5">Actiestatus</th>
+                <th className="px-3 py-2.5">Taakstatus</th>
+                <th className="px-3 py-2.5">Periode</th>
+                <th className="px-3 py-2.5">
+                  <span className="inline-flex items-center gap-1">
+                    Verwachte retour
+                    <InfoTip tekst="Datum waarop het werk volgens de externe partner gereed of retour wordt verwacht." />
+                  </span>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {zichtbaar.map((r) => {
+                const actie = r.taak.externeActie
+                const partner = actie?.partijId ? partijen.find((p) => p.id === actie.partijId) : undefined
+                const actieStatus: ExterneActieStatus = actie?.status ?? 'niet_aangevraagd'
+                const periode =
+                  r.taak.start && r.taak.eind
+                    ? `${formatDatumKort(r.taak.start)} – ${formatDatumKort(r.taak.eind)}`
+                    : r.taak.start
+                      ? `vanaf ${formatDatumKort(r.taak.start)}`
+                      : undefined
+                const periodeTitel =
+                  r.taak.start && r.taak.eind ? `${formatDatum(r.taak.start)} t/m ${formatDatum(r.taak.eind)}` : undefined
+                return (
+                  <tr
+                    key={r.taak.id}
+                    onClick={() => onOpenProject(r.project.id)}
+                    className="cursor-pointer border-b border-slate-100 last:border-b-0 hover:bg-slate-50"
+                  >
+                    <td className="px-3 py-2.5 whitespace-nowrap">
+                      <span
+                        className="font-medium text-brand-700 hover:underline"
+                        title={`${r.project.projectnummer} · ${r.project.naam} (${r.project.klant})`}
+                      >
+                        {r.project.projectnummer}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <span className="font-medium text-slate-800">{r.taak.naam}</span>
+                      <span className="block text-[11px] text-slate-400">{r.fase.naam}</span>
+                    </td>
+                    <td className="px-3 py-2.5 text-slate-700">
+                      {partner ? (
+                        <span title={partner.contactpersoon ? `Contactpersoon: ${partner.contactpersoon}` : undefined}>
+                          {partner.naam}
+                          {partner.gearchiveerd && <span className="ml-1 text-[10px] text-amber-600">(gearchiveerd)</span>}
+                        </span>
+                      ) : (
+                        <span className="text-slate-400">—</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <Badge kleur={ACTIE_STATUS_KLEUR[actieStatus]}>{EXTERNE_ACTIE_LABELS[actieStatus]}</Badge>
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <Badge kleur={TAAK_STATUS_KLEUR[r.taak.status]}>{TAAK_STATUS_LABELS[r.taak.status]}</Badge>
+                    </td>
+                    <td className="px-3 py-2.5 text-xs whitespace-nowrap tabular-nums text-slate-600" title={periodeTitel}>
+                      {periode ?? <span className="text-slate-400">—</span>}
+                    </td>
+                    <td className="px-3 py-2.5 text-xs whitespace-nowrap tabular-nums text-slate-600">
+                      {actie?.verwachteRetour ? (
+                        <span title={formatDatum(actie.verwachteRetour)}>{formatDatumKort(actie.verwachteRetour)}</span>
+                      ) : (
+                        <span className="text-slate-400">—</span>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Kaart>
   )
 }

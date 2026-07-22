@@ -14,6 +14,9 @@ import type {
   Plaats,
   ProductTemplate,
   Project,
+  ProjectHistorieItem,
+  ProjectNotitie,
+  Taak,
   TemplateFase,
   TemplateStatus,
   TemplateTaak,
@@ -48,6 +51,7 @@ function wps(
       uren: per,
       voortgang: v,
       status: v >= 100 ? 'gereed' : v > 0 ? 'bezig' : 'gepland',
+      taken: [],
     }
   })
 }
@@ -219,7 +223,8 @@ export function maakSeedData(): AppData {
     { id: 'ext-spuit-coatworks', naam: 'CoatWorks Venlo', type: 'spuiter', specialisme: 'Coating van XL-voertuigen', contactpersoon: 'Miriam Janssen', slotsPerWeek: 1, vertragingDagen: 0, status: 'beschikbaar' },
     { id: 'ext-airco', naam: 'AirTech Klimaatsystemen', type: 'airco', specialisme: 'Airconditioning & verwarming voor mobiele units', contactpersoon: 'Jeroen Kuypers', slotsPerWeek: 2, vertragingDagen: 0, status: 'beschikbaar' },
     { id: 'ext-interieur', naam: 'Studio Interieurbouw Brabant', type: 'interieur', specialisme: 'Maatwerkinterieurs & meubilair', contactpersoon: 'Floor Aarts', slotsPerWeek: 1, vertragingDagen: 0, status: 'vol', notities: 'Vol tot over 3 weken.' },
-    { id: 'ext-elektro', naam: 'Voltec Installaties', type: 'elektro', specialisme: 'Elektrotechniek & verlichting', contactpersoon: 'Bram Scholten', slotsPerWeek: 2, vertragingDagen: 0, status: 'beschikbaar' },
+    { id: 'ext-elektro', naam: 'Voltec Installaties', type: 'elektro', specialisme: 'Elektrotechniek & verlichting', contactpersoon: 'Bram Scholten', email: 'bram@voltec.nl', telefoon: '040-2334455', standaardDoorlooptijdDagen: 3, slotsPerWeek: 2, vertragingDagen: 0, status: 'beschikbaar' },
+    { id: 'ext-transport', naam: 'Van Straalen Transport', type: 'transport', specialisme: 'Exceptioneel transport van trailers', contactpersoon: 'Kees van Straalen', email: 'planning@vanstraalen.nl', telefoon: '0413-778899', adres: 'Industrieweg 14, Veghel', standaardDoorlooptijdDagen: 1, slotsPerWeek: 3, vertragingDagen: 0, status: 'beschikbaar', beschikbaarheid: 'Ma t/m vr, aanvraag min. 3 dagen vooraf' },
   ]
 
   // ---------- Projecten & fases ----------
@@ -294,7 +299,7 @@ export function maakSeedData(): AppData {
   if (p3Afbouw) {
     p3Afbouw.werkpakketten.push({
       id: 'wp-p3-extra', naam: 'Medische inrichting (onderaannemer)', uren: 60, voortgang: 0,
-      status: 'gepland', extraTaak: true, aantalMedewerkers: 1, omschrijving: 'Projectspecifiek toegevoegd voor MedCare.',
+      status: 'gepland', taken: [], extraTaak: true, aantalMedewerkers: 1, omschrijving: 'Projectspecifiek toegevoegd voor MedCare.',
     })
   }
 
@@ -374,6 +379,8 @@ export function maakSeedData(): AppData {
     fase('f-p7-kwal', 'p7', 'kwaliteit', wd(93), wd(99), 40, ['f-p7-afb'], { teamId: 'team-afb-a' }),
   )
 
+  vulDemoTaken(fases)
+
   const uitbreiding = maakLocatieUitbreiding()
 
   return {
@@ -392,7 +399,103 @@ export function maakSeedData(): AppData {
     locatieHistorie: uitbreiding.locatieHistorie,
     templates: maakSeedTemplates(),
     complexiteitNiveaus: STANDAARD_COMPLEXITEITSNIVEAUS.map((n) => ({ ...n })),
+    projectNotities: maakSeedNotities(),
+    projectHistorie: maakSeedHistorie(),
+    bestanden: [],
+    partnerTypes: [],
   }
+}
+
+// ---------- Fase 2: demotaken, notities en historie ----------
+
+function maakSeedTaak(id: string, naam: string, deels: Partial<Taak>): Taak {
+  return {
+    id,
+    naam,
+    uitvoering: 'intern',
+    uitvoerendeIds: [],
+    uren: 8,
+    prioriteit: 'normaal',
+    status: 'te_doen',
+    afhankelijkVan: [],
+    vaardigheden: [],
+    aangemaaktOp: d(-10),
+    aangemaaktDoor: 'Petra Simons',
+    gewijzigdOp: d(-2),
+    gewijzigdDoor: 'Petra Simons',
+    ...deels,
+  }
+}
+
+/** Voorbeeld-detailplanning: het proces "Elektrische installatie & verlichting" van PR3305 krijgt vijf taken. */
+function vulDemoTaken(fases: Fase[]): void {
+  const afbouw = fases.find((f) => f.id === 'f-p1-afb')
+  const proces = afbouw?.werkpakketten[0]
+  if (!afbouw || !proces) return
+  proces.taken = [
+    maakSeedTaak('taak-p1-el-1', 'Kabelgoten monteren', {
+      status: 'gereed', uren: 12, teamId: 'team-afb-a', taakEigenaarId: 'mw-pieter', uitvoerendeIds: ['mw-pieter'],
+      start: wd(-6), eind: wd(-4), werkelijkeStart: wd(-6), werkelijkGereedOp: wd(-4), vaardigheden: ['Elektra'],
+    }),
+    maakSeedTaak('taak-p1-el-2', 'Bekabeling trekken', {
+      status: 'gereed', uren: 16, teamId: 'team-afb-a', taakEigenaarId: 'mw-pieter',
+      uitvoerendeIds: ['mw-pieter', 'mw-tom'], start: wd(-3), eind: wd(0),
+      werkelijkeStart: wd(-3), werkelijkGereedOp: wd(0), afhankelijkVan: ['taak-p1-el-1'], vaardigheden: ['Elektra'],
+    }),
+    maakSeedTaak('taak-p1-el-3', 'Groepenkast aansluiten', {
+      status: 'in_uitvoering', uren: 14, teamId: 'team-afb-a', taakEigenaarId: 'mw-pieter', uitvoerendeIds: ['mw-pieter'],
+      start: wd(1), eind: wd(3), werkelijkeStart: wd(1), afhankelijkVan: ['taak-p1-el-2'], vaardigheden: ['Elektra'],
+      omschrijving: 'Groepenkast plaatsen, groepen aansluiten en doormeten.',
+    }),
+    maakSeedTaak('taak-p1-el-4', 'Verlichting aansluiten', {
+      status: 'on_hold', uren: 12, teamId: 'team-afb-a', uitvoerendeIds: ['mw-tom'],
+      start: wd(4), eind: wd(7), afhankelijkVan: ['taak-p1-el-3'],
+      onHoldReden: 'Armaturen nog niet geleverd', hervattenOp: wd(8),
+      blokkade: 'Wacht op leverancier armaturen',
+    }),
+    maakSeedTaak('taak-p1-el-5', 'Functionele test uitvoeren', {
+      status: 'te_doen', uren: 6, uitvoering: 'extern', afhankelijkVan: ['taak-p1-el-4'],
+      start: wd(8), eind: wd(9), projectspecifiek: true,
+      externeActie: { partijId: 'ext-elektro', status: 'bevestigd', contactpersoon: 'Bram Scholten', bevestigdOp: d(-3), aangevraagdOp: d(-6) },
+      omschrijving: 'Externe keuring en functionele test van de volledige installatie.',
+    }),
+  ]
+  proces.uren = proces.taken.reduce((s, t) => s + t.uren, 0)
+  proces.voortgang = Math.round((28 / proces.uren) * 100)
+  proces.status = 'bezig'
+  afbouw.uren = afbouw.werkpakketten.reduce((s, wp) => s + wp.uren, 0)
+}
+
+function maakSeedNotities(): ProjectNotitie[] {
+  return [
+    {
+      id: 'not-1', projectId: 'p1', niveau: 'taak', doelId: 'taak-p1-el-4', doelNaam: 'Verlichting aansluiten',
+      tekst: 'Leverancier belooft levering armaturen uiterlijk begin volgende week.', tijdstip: `${d(-1)}T10:20:00`,
+      auteur: 'Marco de Wit', partijId: undefined, belangrijk: true,
+    },
+    {
+      id: 'not-2', projectId: 'p1', niveau: 'fase', doelId: 'f-p1-afb', doelNaam: 'Afbouw',
+      tekst: 'Klant komt volgende week donderdag kijken; graag werkplek opgeruimd houden.', tijdstip: `${d(-2)}T14:05:00`,
+      auteur: 'Hugo Brands',
+    },
+  ]
+}
+
+function maakSeedHistorie(): ProjectHistorieItem[] {
+  return [
+    {
+      id: 'his-1', projectId: 'p1', tijdstip: `${d(-1)}T10:22:00`, gebruiker: 'Marco de Wit',
+      wijziging: 'Status gewijzigd · Verlichting aansluiten', oudeWaarde: 'Te doen', nieuweWaarde: 'On hold',
+    },
+    {
+      id: 'his-2', projectId: 'p1', tijdstip: `${d(-3)}T09:10:00`, gebruiker: 'Petra Simons',
+      wijziging: 'Externe partner gekoppeld · Functionele test uitvoeren', nieuweWaarde: 'Voltec Installaties',
+    },
+    {
+      id: 'his-3', projectId: 'p1', tijdstip: `${d(-6)}T08:45:00`, gebruiker: 'Petra Simons',
+      wijziging: 'Taak toegevoegd', nieuweWaarde: 'Functionele test uitvoeren',
+    },
+  ]
 }
 
 // ==================================================

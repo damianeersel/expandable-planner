@@ -1,4 +1,4 @@
-// Projectdetailpagina: kop met status en orderbevestiging, processtappenbalk en acht tabs.
+// Projectdetailpagina: kop met status en orderbevestiging, processtappenbalk en negen tabs.
 
 import { useEffect, useState, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router-dom'
@@ -18,13 +18,13 @@ import { useApp } from '../store/AppState'
 import {
   COMPLEXITEIT_LABELS,
   EXTERN_TYPE_LABELS,
+  externTypeLabel,
   FASE_STATUS_LABELS,
   PRIORITEIT_LABELS,
   PROJECT_STATUS_LABELS,
   SCENARIO_LABELS,
   type ExternePartij,
   type Fase,
-  type ISODate,
   type Prioriteit,
   type Project,
   type ProjectStatus,
@@ -66,9 +66,12 @@ import {
 import ProcesBalk from '../components/project/ProcesBalk'
 import MiniGantt from '../components/project/MiniGantt'
 import FaseKaart, { FASE_STATUS_KLEUR } from '../components/project/FaseKaart'
+import FasesTab from '../components/project/FasesTab'
 import OrderBevestigenDialog from '../components/project/OrderBevestigenDialog'
 import OpslaanAlsTemplateModal from '../components/project/OpslaanAlsTemplateModal'
 import UnitLocatieTab from '../components/project/UnitLocatieTab'
+import BestandenTab from '../components/project/BestandenTab'
+import NotitiesHistorieTab from '../components/project/NotitiesHistorieTab'
 
 // ---------- Kleine hulpcomponenten ----------
 
@@ -341,23 +344,7 @@ function PlanningTab({ project }: { project: Project }) {
   )
 }
 
-// ---------- Tab: Fases & werkzaamheden ----------
-
-function FasesTab({ project }: { project: Project }) {
-  const { data } = useApp()
-  const fases = projectFases(data, project.id)
-  const huidige = getHuidigeFase(data, project.id)
-  if (fases.length === 0) {
-    return <LegeStaat titel="Geen fases" tekst="Voor dit project zijn nog geen fases aangemaakt." />
-  }
-  return (
-    <div className="space-y-3">
-      {fases.map((f) => (
-        <FaseKaart key={f.id} fase={f} standaardOpen={f.id === huidige?.id} />
-      ))}
-    </div>
-  )
-}
+// ---------- Tab: Fases & werkzaamheden (uitgelicht naar eigen component) ----------
 
 // ---------- Tab: Team & resources ----------
 
@@ -512,7 +499,7 @@ function ExternFaseKaart({ fase }: { fase: Fase }) {
       <div className="grid grid-cols-1 gap-x-8 px-4 py-1 md:grid-cols-2">
         <div>
           <Rij label="Partij">{partij?.naam ?? 'Onbekende partij'}</Rij>
-          <Rij label="Type">{partij ? EXTERN_TYPE_LABELS[partij.type] : '—'}</Rij>
+          <Rij label="Type">{partij ? externTypeLabel(partij.type) : '—'}</Rij>
           <Rij label="Specialisme">{partij?.specialisme ?? '—'}</Rij>
           <Rij label="Contactpersoon">{partij?.contactpersoon ?? '—'}</Rij>
         </div>
@@ -532,7 +519,7 @@ function ExternFaseKaart({ fase }: { fase: Fase }) {
       {partij?.notities && <p className="px-4 pb-3 text-xs italic text-slate-500">{partij.notities}</p>}
       {permissies.externBeheren && fase.status !== 'gereed' && (
         <div className="border-t border-slate-100 px-4 py-3">
-          <Veld label={`Andere ${partij ? EXTERN_TYPE_LABELS[partij.type].toLowerCase() : 'partij'} kiezen`}>
+          <Veld label={`Andere ${partij ? externTypeLabel(partij.type).toLowerCase() : 'partij'} kiezen`}>
             <Keuze value={fase.externePartijId} onChange={(e) => wissel(e.target.value)} className="!w-80">
               {opties.map((e) => (
                 <option key={e.id} value={e.id}>
@@ -605,40 +592,7 @@ function RisicoTab({ project }: { project: Project }) {
   )
 }
 
-// ---------- Tab: Notities & historie ----------
-
-function HistorieTab({ project }: { project: Project }) {
-  const { data } = useApp()
-  const gereed = projectFases(data, project.id).filter((f) => f.status === 'gereed')
-  const items: { datum: ISODate; tekst: string }[] = [
-    { datum: project.aangemaaktOp, tekst: 'Project aangemaakt (salesoverdracht)' },
-    ...(project.bevestigdOp
-      ? [{ datum: project.bevestigdOp, tekst: 'Order bevestigd — opgenomen in de definitieve planning' }]
-      : []),
-    ...gereed.map((f) => ({ datum: f.eind, tekst: `Fase "${f.naam}" gereed` })),
-  ].sort((a, b) => (a.datum < b.datum ? -1 : 1))
-
-  return (
-    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-      <NotitiesKaart project={project} />
-      <Kaart>
-        <KaartKop titel="Historie" uitleg="Automatisch afgeleide mijlpalen van dit project." />
-        <ul className="p-4">
-          {items.map((item, i) => (
-            <li key={i} className="relative flex gap-3 pb-4 last:pb-0">
-              {i < items.length - 1 && <span className="absolute left-[5px] top-4 h-full w-px bg-slate-200" />}
-              <span className="mt-1 h-[11px] w-[11px] shrink-0 rounded-full border-2 border-brand-600 bg-white" />
-              <div>
-                <div className="text-xs tabular-nums text-slate-400">{formatDatum(item.datum)}</div>
-                <div className="text-sm text-slate-700">{item.tekst}</div>
-              </div>
-            </li>
-          ))}
-        </ul>
-      </Kaart>
-    </div>
-  )
-}
+// ---------- Tab: Notities & historie (uitgelicht naar eigen component) ----------
 
 // ---------- Hoofdscherm ----------
 
@@ -648,6 +602,7 @@ const TABS = [
   { id: 'fases', label: 'Fases & werkzaamheden' },
   { id: 'team', label: 'Team & resources' },
   { id: 'unit', label: 'Trailer en locatie' },
+  { id: 'bestanden', label: 'Bestanden' },
   { id: 'extern', label: 'Externe partijen' },
   { id: 'risico', label: 'Risico’s & blokkades' },
   { id: 'historie', label: 'Notities & historie' },
@@ -714,9 +669,13 @@ export default function ProjectDetail() {
             <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500">
               <span className="inline-flex items-center gap-1.5">
                 <LayoutTemplate size={13} className="text-slate-400" />
-                Template: {project.templateTrailertype ?? project.productModel} · {templateComplexiteitNaam} · versie{' '}
-                {project.templateVersie ?? 1}
+                Gebaseerd op: {project.templateTrailertype ?? project.productModel} · {templateComplexiteitNaam} ·
+                versie {project.templateVersie ?? 1}
               </span>
+              <Badge kleur="grijs">
+                Losgekoppeld van template
+                <InfoTip tekst="Het project is bij het aanmaken een volledige, zelfstandige kopie van het template geworden. Wijzigingen aan het template werken niet door in dit project (en andersom)." />
+              </Badge>
               {project.projectspecifiekAangepast && <Badge kleur="amber">Projectspecifiek aangepast</Badge>}
             </div>
           )}
@@ -793,9 +752,10 @@ export default function ProjectDetail() {
         {tab === 'fases' && <FasesTab project={project} />}
         {tab === 'team' && <TeamResourcesTab project={project} />}
         {tab === 'unit' && <UnitLocatieTab project={project} />}
+        {tab === 'bestanden' && <BestandenTab key={project.id} project={project} />}
         {tab === 'extern' && <ExternTab project={project} />}
         {tab === 'risico' && <RisicoTab project={project} />}
-        {tab === 'historie' && <HistorieTab project={project} />}
+        {tab === 'historie' && <NotitiesHistorieTab key={project.id} project={project} />}
       </div>
 
       <OrderBevestigenDialog project={project} open={orderDialoogOpen} onSluiten={() => setOrderDialoogOpen(false)} />

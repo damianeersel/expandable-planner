@@ -12,7 +12,9 @@
       "Bash(grep -rn \"to=[\\\\\"'\\\\\\\\\\\\`]/\" src/screens/Planningstemplates.tsx src/screens/TemplateEditorScherm.tsx src/screens/ProjectDetail.tsx)",
       "Bash(grep -rhoE \">[A-Za-z][^<>{}]{2,45}<\" src/components/projecten/NieuwProjectWizard.tsx src/components/project/OpslaanAlsTemplateModal.tsx src/components/templates/TaakRij.tsx src/components/templates/TaakModal.tsx src/components/templates/TemplateFaseKaart.tsx src/components/templates/TemplateCapaciteit.tsx)",
       "Bash(echo \"tsc: OK \\($?\\)\")",
-      "Bash(npx vite *)"
+      "Bash(npx vite *)",
+      "Bash(perl -pi -e 's/EXTERN_TYPE_LABELS\\\\[partij\\\\.type\\\\]/externTypeLabel\\(partij.type\\)/g' screens/ProjectDetail.tsx screens/ExternePartijen.tsx)",
+      "Bash(gh auth *)"
     ]
   }
 }

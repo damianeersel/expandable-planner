@@ -166,13 +166,94 @@ export const FASE_STATUS_LABELS: Record<FaseStatus, string> = {
   geblokkeerd: 'Geblokkeerd',
 }
 
+// ---------- Taken (detailplanning binnen een proces/werkpakket) ----------
+
+export type TaakStatus = 'te_doen' | 'in_uitvoering' | 'on_hold' | 'gereed'
+
+export const TAAK_STATUS_LABELS: Record<TaakStatus, string> = {
+  te_doen: 'Te doen',
+  in_uitvoering: 'In uitvoering',
+  on_hold: 'On hold',
+  gereed: 'Gereed',
+}
+
+export type ExterneActieStatus =
+  | 'niet_aangevraagd'
+  | 'aangevraagd'
+  | 'wacht_bevestiging'
+  | 'bevestigd'
+  | 'in_uitvoering'
+  | 'on_hold'
+  | 'gereed'
+  | 'vertraagd'
+
+export const EXTERNE_ACTIE_LABELS: Record<ExterneActieStatus, string> = {
+  niet_aangevraagd: 'Nog niet aangevraagd',
+  aangevraagd: 'Aangevraagd',
+  wacht_bevestiging: 'In afwachting van bevestiging',
+  bevestigd: 'Bevestigd',
+  in_uitvoering: 'In uitvoering',
+  on_hold: 'On hold',
+  gereed: 'Gereed',
+  vertraagd: 'Vertraagd',
+}
+
+/** Externe uitbesteding van een taak; bestaat naast de gewone taakstatus. */
+export interface ExterneActie {
+  partijId?: string
+  status: ExterneActieStatus
+  contactpersoon?: string
+  aangevraagdOp?: ISODate
+  bevestigdOp?: ISODate
+  slot?: string
+  verwachteRetour?: ISODate
+  notitie?: string
+}
+
+/** Kleinste planbare eenheid: een taak binnen een proces (werkpakket). */
+export interface Taak {
+  id: string
+  naam: string
+  omschrijving?: string
+  uitvoering: 'intern' | 'extern'
+  teamId?: string
+  taakEigenaarId?: string
+  uitvoerendeIds: string[]
+  /** Handmatige urenverdeling per uitvoerende (leeg = gelijkmatig verdeeld). */
+  urenPerMedewerker?: Record<string, number>
+  externeActie?: ExterneActie
+  uren: number
+  werkelijkeUren?: number
+  start?: ISODate
+  eind?: ISODate
+  prioriteit: Prioriteit
+  status: TaakStatus
+  /** Einde-naar-start: deze taak start pas als de genoemde taken gereed zijn (taak-ids binnen het project). */
+  afhankelijkVan: string[]
+  vaardigheden: string[]
+  /** Blokkade is een eigenschap naast de status, geen extra status. */
+  blokkade?: string
+  onHoldReden?: string
+  hervattenOp?: ISODate
+  werkelijkeStart?: ISODate
+  werkelijkGereedOp?: ISODate
+  /** Handmatig toegevoegd binnen dit project (niet uit het template). */
+  projectspecifiek?: boolean
+  aangemaaktOp: ISODate
+  aangemaaktDoor: string
+  gewijzigdOp: ISODate
+  gewijzigdDoor: string
+}
+
 export interface Werkpakket {
   id: string
   naam: string
   uren: number
   voortgang: number // 0-100
   status: FaseStatus
-  // ---------- Optionele template-/taakvelden (gevuld bij genereren vanuit een template) ----------
+  /** Detailtaken; leeg = het proces wordt op procesniveau gepland (voortgang handmatig). */
+  taken: Taak[]
+  // ---------- Optionele template-/procesvelden ----------
   omschrijving?: string
   /** Herkomst-taak in het template (leeg = projectspecifiek toegevoegd). */
   templateTaakId?: string
@@ -182,6 +263,11 @@ export interface Werkpakket {
   aantalMedewerkers?: number
   /** Uitsluitend voor dit project toegevoegd (niet uit het template). */
   extraTaak?: boolean
+  verantwoordelijkeId?: string
+  start?: ISODate
+  eind?: ISODate
+  uitvoering?: 'intern' | 'extern'
+  externePartijId?: string
 }
 
 export interface Fase {
@@ -279,28 +365,51 @@ export interface BeschikbaarheidAanpassing {
 
 // ---------- Externe partijen ----------
 
-export type ExternType = 'spuiter' | 'airco' | 'interieur' | 'elektro' | 'audiovideo' | 'sanitair' | 'wrapping' | 'overig'
+export type ExternType =
+  | 'spuiter'
+  | 'airco'
+  | 'interieur'
+  | 'elektro'
+  | 'audiovideo'
+  | 'sanitair'
+  | 'wrapping'
+  | 'transport'
+  | 'overig'
 
 export const EXTERN_TYPE_LABELS: Record<ExternType, string> = {
   spuiter: 'Externe spuiter',
-  airco: 'Airconditioning',
-  interieur: 'Interieurbouw',
-  elektro: 'Elektrotechniek',
-  audiovideo: 'Audio/video',
+  airco: 'Aircopartner',
+  interieur: 'Interieurbouwer',
+  elektro: 'Elektrotechnische partner',
+  audiovideo: 'Audio- en videopartner',
   sanitair: 'Sanitaire installatie',
-  wrapping: 'Wrapping & signing',
-  overig: 'Overig',
+  wrapping: 'Wrapping- en signingpartner',
+  transport: 'Transporteur',
+  overig: 'Overige onderaannemer',
+}
+
+/** Label voor een partnertype: bekende types via EXTERN_TYPE_LABELS, eigen types letterlijk. */
+export function externTypeLabel(type: string): string {
+  return (EXTERN_TYPE_LABELS as Record<string, string>)[type] ?? type
 }
 
 export interface ExternePartij {
   id: string
   naam: string
-  type: ExternType
+  /** Bekend ExternType of een zelf toegevoegd partnertype. */
+  type: string
   specialisme: string
   contactpersoon: string
+  email?: string
+  telefoon?: string
+  adres?: string
+  /** Vrije beschrijving van de beschikbaarheid (bijv. "vanaf week 34"). */
+  beschikbaarheid?: string
   slotsPerWeek: number // gelijktijdige projecten / capaciteit
+  standaardDoorlooptijdDagen?: number
   vertragingDagen: number // actuele gemelde vertraging in werkdagen
   status: 'beschikbaar' | 'vol' | 'vertraagd'
+  gearchiveerd?: boolean
   notities?: string
 }
 
@@ -510,6 +619,55 @@ export const VERPLAATS_REDENEN: string[] = [
   'Handmatige correctie',
 ]
 
+// ---------- Notities, historie & bestanden ----------
+
+export type NotitieNiveau = 'project' | 'fase' | 'proces' | 'taak'
+
+export interface ProjectNotitie {
+  id: string
+  projectId: string
+  niveau: NotitieNiveau
+  /** Fase-, proces- of taak-id (leeg bij projectniveau). */
+  doelId?: string
+  /** Denormalized label van het doel, zodat de notitie leesbaar blijft na verwijderen. */
+  doelNaam?: string
+  tekst: string
+  tijdstip: string // ISO-datetime
+  auteur: string
+  medewerkerId?: string
+  partijId?: string
+  belangrijk?: boolean
+}
+
+/** Traceerbaar historie-item van een belangrijke projectwijziging. */
+export interface ProjectHistorieItem {
+  id: string
+  projectId: string
+  tijdstip: string // ISO-datetime
+  gebruiker: string
+  wijziging: string
+  oudeWaarde?: string
+  nieuweWaarde?: string
+}
+
+/** Metadata van een bijlage; de bestandsinhoud zelf staat in IndexedDB (zie lib/bestanden.ts). */
+export interface BestandMeta {
+  id: string
+  naam: string
+  type: string // MIME-type
+  grootte: number // bytes
+  uploadOp: string // ISO-datetime
+  door: string
+  projectId: string
+  faseId?: string
+  procesId?: string
+  taakId?: string
+  partijId?: string
+  omschrijving?: string
+  /** False wanneer alleen metadata kon worden bewaard (bestand niet in IndexedDB). */
+  opgeslagen: boolean
+}
+
 // ---------- Applicatiestate ----------
 
 export interface AppData {
@@ -528,6 +686,11 @@ export interface AppData {
   locatieHistorie: LocatieMutatie[]
   templates: ProductTemplate[]
   complexiteitNiveaus: ComplexiteitNiveau[]
+  projectNotities: ProjectNotitie[]
+  projectHistorie: ProjectHistorieItem[]
+  bestanden: BestandMeta[]
+  /** Zelf toegevoegde partnertypes (naast de standaard EXTERN_TYPE_LABELS). */
+  partnerTypes: string[]
 }
 
 export interface UIState {
