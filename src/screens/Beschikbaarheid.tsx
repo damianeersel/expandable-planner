@@ -1,5 +1,6 @@
 // Beschikbaarheidsoverzicht per medewerker: week- en maandweergave met filters,
-// afwezigheden en tijdelijke beschikbaarheidsaanpassingen.
+// afwezigheden, tijdelijke beschikbaarheidsaanpassingen en de geplande taakbelasting
+// vanuit de detailplanning (bezetting per medewerker).
 
 import { Fragment, useMemo, useState } from 'react'
 import { ArrowRight, CalendarDays, ChevronLeft, ChevronRight, Plus, Search, Trash2 } from 'lucide-react'
@@ -25,11 +26,14 @@ import {
   weekNummer,
 } from '../lib/dates'
 import {
+  bezettingsPct,
+  capaciteitsNiveau,
   medewerkerAfwezigInWeek,
   medewerkerBeschikbaarInWeek,
   medewerkerPctOpDag,
   medewerkerUrenOpDag,
 } from '../lib/capacity'
+import { medewerkerTaakBelastingInWeek, medewerkerTaakUrenInWeek } from '../lib/taken'
 import { uid } from '../lib/uid'
 import {
   Badge,
@@ -160,8 +164,69 @@ function WeekCel({ data, m, datum }: { data: AppData; m: Medewerker; datum: ISOD
   )
 }
 
+/** Geplande taakuren in een week, met tooltip die de bijdragende taken toont (PR-nummer · taak · uren). */
+function GeplandCel({ data, m, weekStart }: { data: AppData; m: Medewerker; weekStart: ISODate }) {
+  const details = medewerkerTaakBelastingInWeek(data, m.id, weekStart)
+  const totaal = details.reduce((s, d) => s + d.uren, 0)
+  if (totaal <= 0) return <span className="text-slate-300">—</span>
+  const zichtbaar = details.slice(0, 6)
+  const rest = details.length - zichtbaar.length
+  return (
+    <Tooltip
+      tekst={
+        <span className="block max-w-80">
+          {zichtbaar.map((d) => {
+            const project = data.projecten.find((p) => p.id === d.plek.fase.projectId)
+            return (
+              <span key={d.plek.taak.id} className="block">
+                • {project?.projectnummer ?? '—'} · {d.plek.taak.naam} · {formatUren(d.uren)} u
+                {d.schaduw ? ' (schaduw)' : ''}
+              </span>
+            )
+          })}
+          {rest > 0 && <span className="block">… en {rest} andere {rest === 1 ? 'taak' : 'taken'}</span>}
+        </span>
+      }
+    >
+      <span className="tabular-nums text-slate-600 underline decoration-dotted decoration-slate-300 underline-offset-2">
+        {formatUren(totaal)}
+      </span>
+    </Tooltip>
+  )
+}
+
+/** Bezettingsbadge: geplande taakuren t.o.v. netto beschikbare uren (<85% ok · 85–100% druk · >100% overboekt). */
+function BezettingBadge({ beschikbaar, gepland }: { beschikbaar: number; gepland: number }) {
+  if (gepland <= 0) return <span className="text-xs text-slate-300">—</span>
+  const pct = bezettingsPct(beschikbaar, gepland)
+  const niveau = capaciteitsNiveau(pct)
+  const stijl =
+    niveau === 'overboekt'
+      ? 'bg-red-50 text-red-700'
+      : niveau === 'druk'
+        ? 'bg-amber-50 text-amber-800'
+        : 'bg-emerald-50 text-emerald-800'
+  const label = beschikbaar <= 0 ? '—' : pct > 400 ? '>400%' : `${pct}%`
+  return (
+    <Tooltip
+      tekst={
+        beschikbaar <= 0
+          ? `${formatUren(gepland)} uur aan taken gepland, maar geen beschikbare uren`
+          : `${formatUren(gepland)} uur aan taken gepland t.o.v. ${formatUren(beschikbaar)} uur netto beschikbaar${
+              niveau === 'overboekt' ? ' — overboekt' : niveau === 'druk' ? ' — hoge bezetting' : ''
+            }`
+      }
+    >
+      <span className={`inline-flex min-w-12 justify-center rounded px-1.5 py-0.5 text-xs font-medium tabular-nums ${stijl}`}>
+        {label}
+      </span>
+    </Tooltip>
+  )
+}
+
 function MaandCel({ data, m, weekStart }: { data: AppData; m: Medewerker; weekStart: ISODate }) {
   const netto = medewerkerBeschikbaarInWeek(data, m.id, weekStart)
+  const gepland = medewerkerTaakUrenInWeek(data, m.id, weekStart)
   const ratio = m.contracturen > 0 ? netto / m.contracturen : 0
   const weekEind = addDagen(weekStart, 4)
 
@@ -177,9 +242,15 @@ function MaandCel({ data, m, weekStart }: { data: AppData; m: Medewerker; weekSt
     if (aanpassing) redenen.push(`tijdelijke aanpassing 0% (${aanpassing.reden})`)
     return (
       <Tooltip
-        tekst={`Geen beschikbare uren deze week${redenen.length > 0 ? `: ${[...new Set(redenen)].join(', ')}` : ''}`}
+        tekst={`Geen beschikbare uren deze week${redenen.length > 0 ? `: ${[...new Set(redenen)].join(', ')}` : ''}${
+          gepland > 0 ? ` · let op: wel ${formatUren(gepland)} uur aan taken gepland` : ''
+        }`}
       >
-        <span className="inline-flex min-w-12 justify-center rounded bg-red-50 px-1.5 py-0.5 text-xs font-semibold text-red-700 tabular-nums">
+        <span
+          className={`inline-flex min-w-12 justify-center rounded bg-red-50 px-1.5 py-0.5 text-xs font-semibold text-red-700 tabular-nums ${
+            gepland > 0 ? 'ring-1 ring-red-400' : ''
+          }`}
+        >
           0
         </span>
       </Tooltip>
@@ -192,9 +263,20 @@ function MaandCel({ data, m, weekStart }: { data: AppData; m: Medewerker; weekSt
       : ratio >= 0.5
         ? 'bg-amber-50 text-amber-800'
         : 'bg-rose-50 text-rose-700'
+  const overboekt = gepland > netto
   return (
-    <Tooltip tekst={`${formatUren(netto)} van ${m.contracturen} contracturen (${Math.round(ratio * 100)}%)`}>
-      <span className={`inline-flex min-w-12 justify-center rounded px-1.5 py-0.5 text-xs font-medium tabular-nums ${tint}`}>
+    <Tooltip
+      tekst={`${formatUren(netto)} van ${m.contracturen} contracturen (${Math.round(ratio * 100)}%)${
+        gepland > 0
+          ? ` · ${formatUren(gepland)} uur aan taken gepland${overboekt ? ' — meer dan beschikbaar' : ''}`
+          : ''
+      }`}
+    >
+      <span
+        className={`inline-flex min-w-12 justify-center rounded px-1.5 py-0.5 text-xs font-medium tabular-nums ${tint} ${
+          overboekt ? 'ring-1 ring-red-400' : ''
+        }`}
+      >
         {formatUren(netto)}
       </span>
     </Tooltip>
@@ -410,7 +492,7 @@ export default function Beschikbaarheid() {
     <div className="p-6">
       <PaginaKop
         titel="Beschikbaarheid"
-        uitleg="Netto inzetbare uren per medewerker, inclusief verlof, verzuim en tijdelijke aanpassingen."
+        uitleg="Netto inzetbare uren per medewerker — inclusief verlof, verzuim en tijdelijke aanpassingen — afgezet tegen de geplande taakuren uit de detailplanning."
         rechts={
           kanBewerken ? (
             <Knop variant="primary" onClick={openModal}>
@@ -508,7 +590,7 @@ export default function Beschikbaarheid() {
       <Kaart className="mb-5 overflow-hidden">
         <KaartKop
           titel={weergave === 'week' ? 'Weekoverzicht' : 'Maandoverzicht (4 weken)'}
-          uitleg="Beschikbare capaciteit: netto inzetbare uren op basis van contracturen × beschikbaarheidspercentage, min verlof, verzuim en training."
+          uitleg="Beschikbare capaciteit: netto inzetbare uren op basis van contracturen × beschikbaarheidspercentage, min verlof, verzuim en training. 'Gepland' telt de taakuren uit de detailplanning waar de medewerker als uitvoerende op staat."
           rechts={
             <span className="text-xs text-slate-500">
               {aantalMedewerkers} medewerker{aantalMedewerkers === 1 ? '' : 's'}
@@ -570,10 +652,22 @@ export default function Beschikbaarheid() {
                         </span>
                       </th>
                       <th className="min-w-20 px-2 py-2.5 text-right font-medium">Afwezig</th>
-                      <th className="min-w-20 px-3 py-2.5 pr-4 text-right font-medium">
+                      <th className="min-w-20 px-3 py-2.5 text-right font-medium">
                         <span className="inline-flex items-center gap-1">
                           Netto
                           <InfoTip tekst="Netto capaciteit: beschikbare uren min afwezigheid. Dit is de capaciteit waarmee de planning rekent." />
+                        </span>
+                      </th>
+                      <th className="min-w-20 px-2 py-2.5 text-right font-medium">
+                        <span className="inline-flex items-center gap-1">
+                          Gepland
+                          <InfoTip tekst="Geplande taakuren uit de detailplanning: taken waar deze medewerker als uitvoerende op staat, evenredig gespreid over de werkdagen van de taakperiode. Taken van schaduwprojecten tellen volledig mee en zijn in de tooltip gemarkeerd." />
+                        </span>
+                      </th>
+                      <th className="min-w-20 px-3 py-2.5 pr-4 text-right font-medium">
+                        <span className="inline-flex items-center gap-1">
+                          Bezetting
+                          <InfoTip tekst="Geplande taakuren t.o.v. netto beschikbare uren: onder 85% ok, 85–100% druk, boven 100% overboekt." />
                         </span>
                       </th>
                     </>
@@ -595,10 +689,16 @@ export default function Beschikbaarheid() {
                           </th>
                         )
                       })}
-                      <th className="min-w-20 px-3 py-2.5 pr-4 text-right font-medium">
+                      <th className="min-w-20 px-3 py-2.5 text-right font-medium">
                         <span className="inline-flex items-center gap-1">
                           Totaal
                           <InfoTip tekst="Som van de netto beschikbare uren over de vier getoonde weken." />
+                        </span>
+                      </th>
+                      <th className="min-w-20 px-3 py-2.5 pr-4 text-right font-medium">
+                        <span className="inline-flex items-center gap-1">
+                          Gepland
+                          <InfoTip tekst="Som van de geplande taakuren uit de detailplanning over de vier getoonde weken. Rood omrand weekvakje = meer taakuren gepland dan er netto beschikbaar is." />
                         </span>
                       </th>
                     </>
@@ -648,6 +748,7 @@ export default function Beschikbaarheid() {
                                   const bruto = brutoBeschikbaarInWeek(data, mw, weekStart)
                                   const afwezigUren = medewerkerAfwezigInWeek(data, mw, weekStart)
                                   const netto = medewerkerBeschikbaarInWeek(data, mw.id, weekStart)
+                                  const gepland = medewerkerTaakUrenInWeek(data, mw.id, weekStart)
                                   return (
                                     <>
                                       <td className="px-2 py-2 text-right tabular-nums text-slate-600">
@@ -660,8 +761,14 @@ export default function Beschikbaarheid() {
                                       >
                                         {afwezigUren > 0 ? formatUren(afwezigUren) : '—'}
                                       </td>
-                                      <td className="px-3 py-2 pr-4 text-right font-semibold tabular-nums text-slate-800">
+                                      <td className="px-3 py-2 text-right font-semibold tabular-nums text-slate-800">
                                         {formatUren(netto)}
+                                      </td>
+                                      <td className="px-2 py-2 text-right">
+                                        <GeplandCel data={data} m={mw} weekStart={weekStart} />
+                                      </td>
+                                      <td className="px-3 py-2 pr-4 text-right">
+                                        <BezettingBadge beschikbaar={netto} gepland={gepland} />
                                       </td>
                                     </>
                                   )
@@ -677,11 +784,42 @@ export default function Beschikbaarheid() {
                                     <MaandCel data={data} m={mw} weekStart={w} />
                                   </td>
                                 ))}
-                                <td className="px-3 py-2 pr-4 text-right font-semibold tabular-nums text-slate-800">
-                                  {formatUren(
-                                    weekStarts.reduce((s, w) => s + medewerkerBeschikbaarInWeek(data, mw.id, w), 0),
-                                  )}
-                                </td>
+                                {(() => {
+                                  const nettoTotaal = weekStarts.reduce(
+                                    (s, w) => s + medewerkerBeschikbaarInWeek(data, mw.id, w),
+                                    0,
+                                  )
+                                  const geplandTotaal = weekStarts.reduce(
+                                    (s, w) => s + medewerkerTaakUrenInWeek(data, mw.id, w),
+                                    0,
+                                  )
+                                  const niveau = capaciteitsNiveau(bezettingsPct(nettoTotaal, geplandTotaal))
+                                  return (
+                                    <>
+                                      <td className="px-3 py-2 text-right font-semibold tabular-nums text-slate-800">
+                                        {formatUren(nettoTotaal)}
+                                      </td>
+                                      <td
+                                        className={`px-3 py-2 pr-4 text-right tabular-nums ${
+                                          geplandTotaal <= 0
+                                            ? 'text-slate-300'
+                                            : niveau === 'overboekt'
+                                              ? 'font-semibold text-red-600'
+                                              : niveau === 'druk'
+                                                ? 'font-medium text-amber-700'
+                                                : 'text-slate-600'
+                                        }`}
+                                        title={
+                                          geplandTotaal > 0
+                                            ? `${formatUren(geplandTotaal)} uur aan taken gepland t.o.v. ${formatUren(nettoTotaal)} uur netto beschikbaar`
+                                            : undefined
+                                        }
+                                      >
+                                        {geplandTotaal > 0 ? formatUren(geplandTotaal) : '—'}
+                                      </td>
+                                    </>
+                                  )
+                                })()}
                               </>
                             )}
                           </tr>
@@ -713,9 +851,29 @@ export default function Beschikbaarheid() {
                             <td className="px-2 py-1.5 text-right text-xs font-semibold tabular-nums text-slate-600">
                               {formatUren(g.leden.reduce((s, mw) => s + medewerkerAfwezigInWeek(data, mw, weekStart), 0))}
                             </td>
-                            <td className="px-3 py-1.5 pr-4 text-right text-xs font-semibold tabular-nums text-slate-700">
-                              {formatUren(g.leden.reduce((s, mw) => s + medewerkerBeschikbaarInWeek(data, mw.id, weekStart), 0))}
-                            </td>
+                            {(() => {
+                              const nettoTotaal = g.leden.reduce(
+                                (s, mw) => s + medewerkerBeschikbaarInWeek(data, mw.id, weekStart),
+                                0,
+                              )
+                              const geplandTotaal = g.leden.reduce(
+                                (s, mw) => s + medewerkerTaakUrenInWeek(data, mw.id, weekStart),
+                                0,
+                              )
+                              return (
+                                <>
+                                  <td className="px-3 py-1.5 text-right text-xs font-semibold tabular-nums text-slate-700">
+                                    {formatUren(nettoTotaal)}
+                                  </td>
+                                  <td className="px-2 py-1.5 text-right text-xs font-semibold tabular-nums text-slate-600">
+                                    {geplandTotaal > 0 ? formatUren(geplandTotaal) : '—'}
+                                  </td>
+                                  <td className="px-3 py-1.5 pr-4 text-right">
+                                    <BezettingBadge beschikbaar={nettoTotaal} gepland={geplandTotaal} />
+                                  </td>
+                                </>
+                              )
+                            })()}
                           </>
                         ) : (
                           <>
@@ -729,11 +887,20 @@ export default function Beschikbaarheid() {
                                 {formatUren(g.leden.reduce((s, mw) => s + medewerkerBeschikbaarInWeek(data, mw.id, w), 0))}
                               </td>
                             ))}
-                            <td className="px-3 py-1.5 pr-4 text-right text-xs font-semibold tabular-nums text-slate-700">
+                            <td className="px-3 py-1.5 text-right text-xs font-semibold tabular-nums text-slate-700">
                               {formatUren(
                                 g.leden.reduce(
                                   (s, mw) =>
                                     s + weekStarts.reduce((s2, w) => s2 + medewerkerBeschikbaarInWeek(data, mw.id, w), 0),
+                                  0,
+                                ),
+                              )}
+                            </td>
+                            <td className="px-3 py-1.5 pr-4 text-right text-xs font-semibold tabular-nums text-slate-600">
+                              {formatUren(
+                                g.leden.reduce(
+                                  (s, mw) =>
+                                    s + weekStarts.reduce((s2, w) => s2 + medewerkerTaakUrenInWeek(data, mw.id, w), 0),
                                   0,
                                 ),
                               )}
@@ -838,6 +1005,10 @@ export default function Beschikbaarheid() {
           <LegendaItem kleur="border-purple-200 bg-purple-100" label="Training" />
           <LegendaItem kleur="border-slate-300 bg-slate-200" label="Kort verzuim · bijzonder verlof · overig" />
           <LegendaItem kleur="border-rose-200 bg-rose-50" label="Maandweergave: minder dan 50% van de contracturen" />
+          <LegendaItem kleur="border-transparent ring-1 ring-red-400 bg-white" label="Meer taakuren gepland dan netto beschikbaar" />
+          <span className="text-slate-500">
+            Bezetting: geplande taakuren t.o.v. netto beschikbaar — onder 85% ok · 85–100% druk · boven 100% overboekt
+          </span>
         </div>
       </Kaart>
 

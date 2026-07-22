@@ -4,5 +4,6 @@ import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
-  server: { port: 5173 },
+  // PORT komt van de preview-tooling wanneer 5173 al bezet is (autoPort).
+  server: { port: Number(process.env.PORT) || 5173 },
 })

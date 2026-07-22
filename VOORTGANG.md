@@ -1,30 +1,33 @@
-# Voortgang — stand 22-07-2026
+# Voortgang — stand 22-07-2026 (avond)
 
-## Afgerond en werkend (in werkmap, deels nog niet gecommit)
+## Afgerond en werkend
 
 1. **Basis-MVP**: dashboard, Gantt (tijdlijnplanning), projecten + wizard, projectdetail, teams, beschikbaarheid, verlof, externe partijen, instellingen, rollen.
 2. **Locatieplanning**: plattegronden MH25 (vierkant, 6+4) / MH207 (langwerpig, 2×6) / Opslag (5×5), drag-and-drop, wachtrij, detailpaneel, historie, "Markeer als opgehaald".
 3. **PR-nummers & modellen**: PR + 4 cijfers als enige identificatie; modellen E7P/E9P/E13T/E13H/E16TU/E16HU.
-4. **Fase 1 templates**: Planningstemplates-scherm, template-editor, versies, wizard-integratie ("Template in schaduwplanning laden"), "Opslaan als nieuw template", complexiteitsniveaus in Instellingen.
-5. **Fase 2 fundering** (deze sessie, gecompileerd groen vóór de agents startten): taakmodel (`Taak`, statussen, `externeActie`), `lib/taken.ts`, `lib/bestanden.ts` (IndexedDB), notities/historie/bestanden/partnerTypes in store + migratie, seed met 5 demotaken op PR3305, transporteur-partner, Gantt toont externe processen ("Extern · partner", paarse arcering).
-6. **Fase 2 schermen** (drie parallelle agents):
-   - ✅ ExternePartijen.tsx: volledig partnerbeheer (CRUD, dupliceren, archiveren, verwijderen-indien-ongebruikt, eigen partnertypes) + kaart "Externe acties". tsc groen.
-   - ✅ ProjectDetail: "Gebaseerd op … · Losgekoppeld van template"-badge, nieuwe tab **Bestanden** (BestandenTab.tsx, upload → IndexedDB), verrijkte **Notities & historie** (NotitiesHistorieTab.tsx). tsc groen.
-   - ✅ Detailplanning (FaseKaart herbouwd, FasesTab met fasebeheer, src/components/project/detail/*: TaakModal, ProcesModal, TaakRij, statusacties met reden-dialogen, toewijzing + capaciteitswaarschuwingen, VerschuifDialoog, NieuwePartnerModal, NotitiePopover). tsc + build groen.
+4. **Fase 1 templates**: Planningstemplates-scherm, template-editor, versies, wizard-integratie, complexiteitsniveaus in Instellingen.
+5. **Fase 2 detailplanning**: taakmodel, `lib/taken.ts`, `lib/bestanden.ts` (IndexedDB), notities/historie/bestanden/partnerTypes, Detailplanning-schermen (FaseKaart/FasesTab/TaakModal e.d.), volledig partnerbeheer, Bestanden-tab. **Gemerged naar main via PR #1 (a81b0cf) → live op Vercel.**
+6. **Fase 3 (deze sessie, branch `fase-3-statusbord-capaciteit`)**:
+   - **Kanban-statusbord** in Fases & werkzaamheden: weergavewissel Fasekaarten ↔ Statusbord (`FasesTab`). Vier statuskolommen (te doen / in uitvoering / on hold / gereed) met tellers en uren, taakkaartjes met fase·proces-context, badges (extern/projectspecifiek/blokkade/prioriteit), on-hold-reden en toewijzing. Drag-and-drop wisselt de status met dezelfde regels als de taakrij: reden-dialoog bij on hold en heropenen, voorganger-/afhankelijkheids-waarschuwingen, historie + undo-toast. Fasefilter. Permissies: alleen taken van je eigen afdeling sleepbaar (productieleider), management volledig alleen-lezen, taaknaam klikbaar → TaakModal (alleen planner).
+   - **Statuswissel-logica geëxtraheerd** naar `useTaakStatusWissel` (src/components/project/detail/), gedeeld door `TaakRij` (dropdown) en `TaakStatusBord` (drop) — geen duplicatie.
+   - **Beschikbaarheid × detailplanning**: weekweergave heeft nu kolommen **Gepland** (taakuren uit de detailplanning, tooltip per taak met PR-nummer; schaduwprojecten gemarkeerd) en **Bezetting** (t.o.v. netto; <85% ok · 85–100% druk · >100% overboekt), incl. teamtotalen. Maandweergave: geplande uren in de weekcel-tooltip, rode ring bij overboekte weken, totaalkolom Gepland. Nieuw in `lib/taken.ts`: `medewerkerTaakBelastingInWeek` (details per taak); `medewerkerTaakUrenInWeek` somt die en slaat geannuleerde projecten nu over.
+   - **Dev-tooling**: `vite.config.ts` + `.claude/launch.json` ondersteunen `autoPort`, zodat een tweede dev-server naast poort 5173 kan draaien.
 
-## Verificatie (22-07, browser)
+## Verificatie (22-07, browser, verse seed)
 
-- Statuswissel taak → voortgang herberekend (47%→70%), historie-item gelogd, heropenen vereist reden (bevestigd).
-- Bestandsupload → koppelmodal → metadata + "Bestand toegevoegd"-historie. LET OP: IndexedDB is in het ingebedde Claude-browserpaneel geblokkeerd → fallback (`opgeslagen: false`, amber "alleen metadata"-badge) werkt zoals bedoeld; in een normale browser slaat de inhoud wél echt op.
-- Notities & historie-tab, Externe acties-kaart (PR3305 · Functionele test · Voltec · Bevestigd) en partnerbeheer-knop gecontroleerd.
+- Statusbord: drop te_doen → in uitvoering zet `werkelijkeStart`, voortgang hernormaliseerd (83% → 77%), tellers live bijgewerkt; drop op On hold opent het reden-dialoog → kaart toont redenbox, toast met "Ongedaan maken".
+- Permissies gecontroleerd: planner en productieleider Afbouw 5 sleepbare kaarten, productieleider Chassisbouw en management 0 (geen sleephint, naam niet klikbaar).
+- TaakRij-dropdown na refactor: statuswissel + waarschuwing "Voorganger … is nog niet gereed" werken via de gedeelde hook.
+- Beschikbaarheid: Pieter Hoekstra Gepland 14 u / Bezetting 35% met tooltip "PR3305 · Groepenkast aansluiten · 14 u"; deelweek-spreiding klopt (6 van 12 u bij taak die halverwege de week start); teamtotaal Afbouw Team A 20 u / 11%; maandweergave met Gepland-totalen. Geen console-fouten.
+- LET OP: echte muis-drag is in het ingebedde Claude-browserpaneel niet te simuleren (CDP-beperking); de drop-handlers zijn geverifieerd met echte DragEvents via JavaScript. In een normale browser werkt slepen gewoon.
 
 ## Openstaande stappen
 
-1. PR `fase-2-detailplanning` → review/merge door Damian (merge = automatische Vercel-deploy).
-2. Daarna eventueel: kanban-statusbord binnen Fases & werkzaamheden (bewust uitgesteld), fijnere medewerker-capaciteitsintegratie in Beschikbaarheid.
+1. PR `fase-3-statusbord-capaciteit` → review/merge door Damian (merge = automatische Vercel-deploy).
+2. Daarna eventueel: sorteer-/prioriteitsvolgorde binnen bordkolommen, projectoverstijgend statusbord (alle projecten), bezettingssignaal per uitvoerende in de TaakModal-toewijzing hergebruiken vanuit `medewerkerTaakBelastingInWeek`.
 
 ## Weetjes
 
-- Laatst gecommitte stand op origin/main = t/m Fase 1 templates + vercel.json (b58af27). Alles van Fase 2 is nog niet gecommit.
+- Laatst gecommitte stand op origin/main = t/m Fase 2 (merge a81b0cf). Fase 3 staat op de feature-branch.
 - Stale HMR-consolefouten na grote refactors zijn normaal; harde herlaad lost het op.
-- localStorage bevat mogelijk oude seed; migratie vangt dit op, maar "Demodata herstellen" geeft de nieuwste demoset.
+- localStorage bevat mogelijk oude seed; migratie vangt dit op, maar "Demodata herstellen" (Instellingen) geeft de nieuwste demoset. Elke dev-serverpoort is een eigen origin met eigen localStorage.
