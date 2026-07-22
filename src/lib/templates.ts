@@ -257,6 +257,7 @@ export function genereerProjectVanTemplate(
       uren: taak.uren,
       voortgang: 0,
       status: 'gepland',
+      taken: [],
       omschrijving: taak.omschrijving,
       templateTaakId: taak.id,
       optioneel: taak.optioneel,

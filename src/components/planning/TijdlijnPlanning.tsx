@@ -18,7 +18,7 @@ import type { Fase, ISODate, Project, Werkpakket } from '../../lib/types'
 import { faseNaarZone, zoneBezetting } from '../../lib/locaties'
 import {
   AFDELING_LABELS,
-  EXTERN_TYPE_LABELS,
+  externTypeLabel,
   FASE_STATUS_LABELS,
   PROJECT_STATUS_LABELS,
   type Afdeling,
@@ -310,7 +310,7 @@ export default function TijdlijnPlanning() {
       // extern
       if (f.externePartijId) {
         const partij = partijMap.get(f.externePartijId)
-        return { sleutel: f.externePartijId, titel: partij ? `${partij.naam} (${EXTERN_TYPE_LABELS[partij.type]})` : f.externePartijId }
+        return { sleutel: f.externePartijId, titel: partij ? `${partij.naam} (${externTypeLabel(partij.type)})` : f.externePartijId }
       }
       return { sleutel: 'intern', titel: 'Interne fases' }
     }
@@ -943,12 +943,27 @@ export default function TijdlijnPlanning() {
                 const faseBreedte = (diffDagen(fase.start, fase.eind) + 1) * tijdlijn.dagBreedte
                 const segment = faseBreedte / aantal
                 const schaduw = rij.project.status === 'schaduw'
+                // Externe uitvoering (proces zelf of één van de detailtaken) herkenbaar maken.
+                const externPartijId =
+                  wp.externePartijId ?? wp.taken.find((t) => t.uitvoering === 'extern')?.externeActie?.partijId
+                const isExtern = wp.uitvoering === 'extern' || wp.taken.some((t) => t.uitvoering === 'extern')
+                const externPartij = externPartijId
+                  ? data.externePartijen.find((p) => p.id === externPartijId)
+                  : undefined
                 return (
                   <div key={rij.sleutel} className="group flex border-b border-slate-50" style={{ width: rijBreedte }}>
                     {linkerCel(
                       <>
                         <span className="w-11 shrink-0" />
                         <span className="min-w-0 flex-1 truncate text-[10px] text-slate-500">{wp.naam}</span>
+                        {isExtern && (
+                          <span
+                            className="shrink-0 rounded-full border border-purple-200 bg-purple-50 px-1 text-[8px] font-medium text-purple-700"
+                            title={`Externe uitvoering${externPartij ? ` · ${externPartij.naam}` : ''}`}
+                          >
+                            Extern{externPartij ? ` · ${externPartij.naam}` : ''}
+                          </span>
+                        )}
                         <span className="shrink-0 text-[9px] tabular-nums text-slate-400">{wp.voortgang}%</span>
                       </>,
                       'h-6',
@@ -956,11 +971,15 @@ export default function TijdlijnPlanning() {
                     <div className="relative h-6 shrink-0" style={{ width: tijdlijn.totaalBreedte, backgroundImage: gridAchtergrond }}>
                       {vandaagLijn}
                       <div
-                        className={`absolute top-1/2 h-2 -translate-y-1/2 overflow-hidden rounded-sm ${schaduw ? 'balk-schaduw' : 'border border-brand-300 bg-brand-100'}`}
+                        className={`absolute top-1/2 h-2 -translate-y-1/2 overflow-hidden rounded-sm ${
+                          isExtern ? 'balk-extern' : schaduw ? 'balk-schaduw' : 'border border-brand-300 bg-brand-100'
+                        }`}
                         style={{ left: faseLeft + index * segment, width: Math.max(3, segment - 2) }}
-                        title={`${wp.naam} · ${wp.voortgang}% · ${wp.uren} u · ${FASE_STATUS_LABELS[wp.status]}`}
+                        title={`${wp.naam} · ${wp.voortgang}% · ${wp.uren} u · ${FASE_STATUS_LABELS[wp.status]}${
+                          externPartij ? ` · Extern: ${externPartij.naam}` : ''
+                        }`}
                       >
-                        {!schaduw && <div className="h-full bg-brand-500" style={{ width: `${wp.voortgang}%` }} />}
+                        {!schaduw && !isExtern && <div className="h-full bg-brand-500" style={{ width: `${wp.voortgang}%` }} />}
                       </div>
                     </div>
                   </div>

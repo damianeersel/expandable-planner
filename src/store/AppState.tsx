@@ -5,6 +5,7 @@ import type {
   Afwezigheid,
   AppData,
   BeschikbaarheidAanpassing,
+  BestandMeta,
   ComplexiteitNiveau,
   ExternePartij,
   Fase,
@@ -17,7 +18,10 @@ import type {
   Persona,
   ProductTemplate,
   Project,
+  ProjectHistorieItem,
+  ProjectNotitie,
   ScenarioMode,
+  Taak,
   Team,
   TijdelijkeToewijzing,
   UIState,
@@ -29,6 +33,7 @@ import { FASE_VOLGORDE, getPermissies, PERSONAS, STANDAARD_COMPLEXITEITSNIVEAUS 
 import { addDagen, vandaagISO } from '../lib/dates'
 import { maakLocatieUitbreiding, maakSeedData, maakSeedTemplates } from '../lib/seed'
 import { getPlaatsInfo, ZONE_AFBOUW, ZONE_CHASSIS, ZONE_PANELEN } from '../lib/locaties'
+import { normaliseerFase } from '../lib/taken'
 import { uid } from '../lib/uid'
 
 const OPSLAG_SLEUTEL = 'expandable-planner-v1'
@@ -90,6 +95,41 @@ export type Action =
   | { type: 'TEMPLATE_PUBLICEREN'; id: string }
   | { type: 'TEMPLATE_ARCHIVEREN'; id: string }
   | { type: 'COMPLEXITEIT_BIJWERKEN'; niveaus: ComplexiteitNiveau[] }
+  // ---------- Detailplanning (fase → proces → taak) ----------
+  | { type: 'FASE_TOEVOEGEN'; fase: Fase; gebruiker: string }
+  | { type: 'FASE_VERWIJDEREN'; faseId: string; gebruiker: string }
+  | { type: 'WERKPAKKET_TOEVOEGEN'; faseId: string; werkpakket: Werkpakket; gebruiker: string }
+  | { type: 'WERKPAKKET_VERWIJDEREN'; faseId: string; wpId: string; gebruiker: string }
+  | { type: 'WERKPAKKET_VERPLAATSEN'; vanFaseId: string; wpId: string; naarFaseId: string; gebruiker: string }
+  | { type: 'TAAK_TOEVOEGEN'; faseId: string; wpId: string; taak: Taak; gebruiker: string }
+  | {
+      type: 'TAAK_BIJWERKEN'
+      faseId: string
+      wpId: string
+      taakId: string
+      patch: Partial<Taak>
+      gebruiker: string
+      /** Optionele historie-omschrijving (bijv. "Status gewijzigd", oud/nieuw). */
+      historie?: { wijziging: string; oud?: string; nieuw?: string }
+    }
+  | {
+      type: 'TAAK_VERPLAATSEN'
+      vanFaseId: string
+      vanWpId: string
+      taakId: string
+      naarFaseId: string
+      naarWpId: string
+      gebruiker: string
+    }
+  | { type: 'TAAK_VERWIJDEREN'; faseId: string; wpId: string; taakId: string; gebruiker: string }
+  | { type: 'NOTITIE_TOEVOEGEN'; notitie: ProjectNotitie }
+  | { type: 'NOTITIE_VERWIJDEREN'; id: string }
+  | { type: 'BESTAND_TOEVOEGEN'; bestand: BestandMeta; gebruiker: string }
+  | { type: 'BESTAND_BIJWERKEN'; id: string; patch: Partial<BestandMeta> }
+  | { type: 'BESTAND_VERWIJDEREN'; id: string; gebruiker: string }
+  | { type: 'PARTNER_TOEVOEGEN'; partij: ExternePartij }
+  | { type: 'PARTNER_VERWIJDEREN'; id: string }
+  | { type: 'PARTNERTYPE_TOEVOEGEN'; naam: string }
 
 interface StoreState {
   data: AppData
@@ -462,9 +502,276 @@ function pasDataToe(data: AppData, action: Action): AppData {
     case 'COMPLEXITEIT_BIJWERKEN':
       return { ...data, complexiteitNiveaus: action.niveaus }
 
+    // ---------- Detailplanning ----------
+
+    case 'FASE_TOEVOEGEN':
+      return {
+        ...data,
+        fases: [...data.fases, normaliseerFase(action.fase)],
+        projecten: markeerProjectspecifiek(data.projecten, action.fase.projectId),
+        projectHistorie: metHistorie(data, action.fase.projectId, action.gebruiker, 'Fase toegevoegd', undefined, action.fase.naam),
+      }
+
+    case 'FASE_VERWIJDEREN': {
+      const fase = data.fases.find((f) => f.id === action.faseId)
+      if (!fase) return data
+      return {
+        ...data,
+        fases: data.fases
+          .filter((f) => f.id !== action.faseId)
+          .map((f) =>
+            f.projectId === fase.projectId
+              ? { ...f, afhankelijkVan: f.afhankelijkVan.filter((d) => d !== action.faseId) }
+              : f,
+          ),
+        projecten: markeerProjectspecifiek(data.projecten, fase.projectId),
+        projectHistorie: metHistorie(data, fase.projectId, action.gebruiker, 'Fase verwijderd', fase.naam, undefined),
+      }
+    }
+
+    case 'WERKPAKKET_TOEVOEGEN': {
+      const fase = data.fases.find((f) => f.id === action.faseId)
+      if (!fase) return data
+      return {
+        ...data,
+        fases: data.fases.map((f) =>
+          f.id === action.faseId ? normaliseerFase({ ...f, werkpakketten: [...f.werkpakketten, action.werkpakket] }) : f,
+        ),
+        projecten: markeerProjectspecifiek(data.projecten, fase.projectId),
+        projectHistorie: metHistorie(data, fase.projectId, action.gebruiker, 'Proces toegevoegd', undefined, action.werkpakket.naam),
+      }
+    }
+
+    case 'WERKPAKKET_VERWIJDEREN': {
+      const fase = data.fases.find((f) => f.id === action.faseId)
+      const wp = fase?.werkpakketten.find((w) => w.id === action.wpId)
+      if (!fase || !wp) return data
+      return {
+        ...data,
+        fases: data.fases.map((f) =>
+          f.id === action.faseId
+            ? normaliseerFase({ ...f, werkpakketten: f.werkpakketten.filter((w) => w.id !== action.wpId) })
+            : f,
+        ),
+        projecten: markeerProjectspecifiek(data.projecten, fase.projectId),
+        projectHistorie: metHistorie(data, fase.projectId, action.gebruiker, 'Proces verwijderd', wp.naam, undefined),
+      }
+    }
+
+    case 'WERKPAKKET_VERPLAATSEN': {
+      const van = data.fases.find((f) => f.id === action.vanFaseId)
+      const naar = data.fases.find((f) => f.id === action.naarFaseId)
+      const wp = van?.werkpakketten.find((w) => w.id === action.wpId)
+      if (!van || !naar || !wp || van.projectId !== naar.projectId) return data
+      return {
+        ...data,
+        fases: data.fases.map((f) => {
+          if (f.id === van.id)
+            return normaliseerFase({ ...f, werkpakketten: f.werkpakketten.filter((w) => w.id !== action.wpId) })
+          if (f.id === naar.id) return normaliseerFase({ ...f, werkpakketten: [...f.werkpakketten, wp] })
+          return f
+        }),
+        projecten: markeerProjectspecifiek(data.projecten, van.projectId),
+        projectHistorie: metHistorie(data, van.projectId, action.gebruiker, 'Proces verplaatst', van.naam, naar.naam),
+      }
+    }
+
+    case 'TAAK_TOEVOEGEN': {
+      const fase = data.fases.find((f) => f.id === action.faseId)
+      if (!fase) return data
+      return {
+        ...data,
+        fases: data.fases.map((f) =>
+          f.id === action.faseId
+            ? normaliseerFase({
+                ...f,
+                werkpakketten: f.werkpakketten.map((wp) =>
+                  wp.id === action.wpId ? { ...wp, taken: [...wp.taken, action.taak] } : wp,
+                ),
+              })
+            : f,
+        ),
+        projecten: markeerProjectspecifiek(data.projecten, fase.projectId),
+        projectHistorie: metHistorie(data, fase.projectId, action.gebruiker, 'Taak toegevoegd', undefined, action.taak.naam),
+      }
+    }
+
+    case 'TAAK_BIJWERKEN': {
+      const fase = data.fases.find((f) => f.id === action.faseId)
+      if (!fase) return data
+      const nu = new Date().toISOString()
+      const taakNaam = fase.werkpakketten.find((w) => w.id === action.wpId)?.taken.find((t) => t.id === action.taakId)?.naam
+      return {
+        ...data,
+        fases: data.fases.map((f) =>
+          f.id === action.faseId
+            ? normaliseerFase({
+                ...f,
+                werkpakketten: f.werkpakketten.map((wp) =>
+                  wp.id === action.wpId
+                    ? {
+                        ...wp,
+                        taken: wp.taken.map((t) =>
+                          t.id === action.taakId
+                            ? { ...t, ...action.patch, gewijzigdOp: nu.slice(0, 10), gewijzigdDoor: action.gebruiker }
+                            : t,
+                        ),
+                      }
+                    : wp,
+                ),
+              })
+            : f,
+        ),
+        projecten: markeerProjectspecifiek(data.projecten, fase.projectId),
+        projectHistorie: action.historie
+          ? metHistorie(
+              data,
+              fase.projectId,
+              action.gebruiker,
+              `${action.historie.wijziging}${taakNaam ? ` · ${taakNaam}` : ''}`,
+              action.historie.oud,
+              action.historie.nieuw,
+            )
+          : data.projectHistorie,
+      }
+    }
+
+    case 'TAAK_VERPLAATSEN': {
+      const van = data.fases.find((f) => f.id === action.vanFaseId)
+      const naar = data.fases.find((f) => f.id === action.naarFaseId)
+      const taak = van?.werkpakketten.find((w) => w.id === action.vanWpId)?.taken.find((t) => t.id === action.taakId)
+      if (!van || !naar || !taak || van.projectId !== naar.projectId) return data
+      const zonder = (f: Fase): Fase => ({
+        ...f,
+        werkpakketten: f.werkpakketten.map((wp) =>
+          wp.id === action.vanWpId ? { ...wp, taken: wp.taken.filter((t) => t.id !== action.taakId) } : wp,
+        ),
+      })
+      const erbij = (f: Fase): Fase => ({
+        ...f,
+        werkpakketten: f.werkpakketten.map((wp) =>
+          wp.id === action.naarWpId ? { ...wp, taken: [...wp.taken, taak] } : wp,
+        ),
+      })
+      return {
+        ...data,
+        fases: data.fases.map((f) => {
+          if (f.id === van.id && f.id === naar.id) return normaliseerFase(erbij(zonder(f)))
+          if (f.id === van.id) return normaliseerFase(zonder(f))
+          if (f.id === naar.id) return normaliseerFase(erbij(f))
+          return f
+        }),
+        projecten: markeerProjectspecifiek(data.projecten, van.projectId),
+        projectHistorie: metHistorie(data, van.projectId, action.gebruiker, `Taak verplaatst · ${taak.naam}`, van.naam, naar.naam),
+      }
+    }
+
+    case 'TAAK_VERWIJDEREN': {
+      const fase = data.fases.find((f) => f.id === action.faseId)
+      const taak = fase?.werkpakketten.find((w) => w.id === action.wpId)?.taken.find((t) => t.id === action.taakId)
+      if (!fase || !taak) return data
+      return {
+        ...data,
+        fases: data.fases.map((f) => {
+          if (f.projectId !== fase.projectId) return f
+          const geschoond: Fase = {
+            ...f,
+            werkpakketten: f.werkpakketten.map((wp) => ({
+              ...wp,
+              taken: wp.taken
+                .filter((t) => !(f.id === action.faseId && wp.id === action.wpId && t.id === action.taakId))
+                .map((t) => ({ ...t, afhankelijkVan: t.afhankelijkVan.filter((d) => d !== action.taakId) })),
+            })),
+          }
+          return f.id === action.faseId ? normaliseerFase(geschoond) : geschoond
+        }),
+        projecten: markeerProjectspecifiek(data.projecten, fase.projectId),
+        projectHistorie: metHistorie(data, fase.projectId, action.gebruiker, 'Taak verwijderd', taak.naam, undefined),
+      }
+    }
+
+    case 'NOTITIE_TOEVOEGEN':
+      return {
+        ...data,
+        projectNotities: [action.notitie, ...data.projectNotities],
+        projectHistorie: metHistorie(
+          data,
+          action.notitie.projectId,
+          action.notitie.auteur,
+          `Notitie toegevoegd${action.notitie.doelNaam ? ` · ${action.notitie.doelNaam}` : ''}`,
+        ),
+      }
+
+    case 'NOTITIE_VERWIJDEREN':
+      return { ...data, projectNotities: data.projectNotities.filter((n) => n.id !== action.id) }
+
+    case 'BESTAND_TOEVOEGEN':
+      return {
+        ...data,
+        bestanden: [action.bestand, ...data.bestanden],
+        projectHistorie: metHistorie(data, action.bestand.projectId, action.gebruiker, 'Bestand toegevoegd', undefined, action.bestand.naam),
+      }
+
+    case 'BESTAND_BIJWERKEN':
+      return { ...data, bestanden: data.bestanden.map((b) => (b.id === action.id ? { ...b, ...action.patch } : b)) }
+
+    case 'BESTAND_VERWIJDEREN': {
+      const bestand = data.bestanden.find((b) => b.id === action.id)
+      if (!bestand) return data
+      return {
+        ...data,
+        bestanden: data.bestanden.filter((b) => b.id !== action.id),
+        projectHistorie: metHistorie(data, bestand.projectId, action.gebruiker, 'Bestand verwijderd', bestand.naam, undefined),
+      }
+    }
+
+    case 'PARTNER_TOEVOEGEN':
+      return { ...data, externePartijen: [...data.externePartijen, action.partij] }
+
+    case 'PARTNER_VERWIJDEREN': {
+      // Alleen verwijderen wanneer de partner nergens wordt gebruikt.
+      const inFases = data.fases.some(
+        (f) =>
+          f.externePartijId === action.id ||
+          f.werkpakketten.some(
+            (wp) => wp.externePartijId === action.id || wp.taken.some((t) => t.externeActie?.partijId === action.id),
+          ),
+      )
+      const inUnits = data.units.some((u) => u.bijExternePartijId === action.id)
+      if (inFases || inUnits) return data
+      return { ...data, externePartijen: data.externePartijen.filter((p) => p.id !== action.id) }
+    }
+
+    case 'PARTNERTYPE_TOEVOEGEN': {
+      const naam = action.naam.trim()
+      if (!naam || data.partnerTypes.includes(naam)) return data
+      return { ...data, partnerTypes: [...data.partnerTypes, naam] }
+    }
+
     default:
       return data
   }
+}
+
+/** Voegt een historie-item toe (nieuwste eerst, maximaal 500 items). */
+function metHistorie(
+  data: AppData,
+  projectId: string,
+  gebruiker: string,
+  wijziging: string,
+  oudeWaarde?: string,
+  nieuweWaarde?: string,
+): ProjectHistorieItem[] {
+  const item: ProjectHistorieItem = {
+    id: uid('his'),
+    projectId,
+    tijdstip: new Date().toISOString(),
+    gebruiker,
+    wijziging,
+    oudeWaarde,
+    nieuweWaarde,
+  }
+  return [item, ...data.projectHistorie].slice(0, 500)
 }
 
 /** Zet de projectspecifiek-vlag op een template-gekoppeld project zodra de planning wijzigt. */
@@ -556,8 +863,33 @@ function migreerNaarTemplates(data: AppData): AppData {
   return Object.keys(patch).length > 0 ? { ...data, ...patch } : data
 }
 
+/**
+ * Fase 2-migratie (detailplanning): geeft elk proces een taken-array, vult de nieuwe
+ * verzamelingen (notities, historie, bestanden, partnertypes) aan en zet partnervelden
+ * op veilige standaardwaarden. Bestaande uren, statussen, datums en voortgang blijven staan.
+ */
+function migreerNaarDetailplanning(data: AppData): AppData {
+  const d = data as Partial<AppData> & AppData
+  const takenOntbreken = d.fases.some((f) => f.werkpakketten.some((wp) => !Array.isArray(wp.taken)))
+  const veldenOntbreken =
+    !Array.isArray(d.projectNotities) || !Array.isArray(d.projectHistorie) || !Array.isArray(d.bestanden) || !Array.isArray(d.partnerTypes)
+  if (!takenOntbreken && !veldenOntbreken) return data
+  return {
+    ...data,
+    fases: d.fases.map((f) => ({
+      ...f,
+      werkpakketten: f.werkpakketten.map((wp) => ({ ...wp, taken: Array.isArray(wp.taken) ? wp.taken : [] })),
+    })),
+    externePartijen: d.externePartijen.map((p) => ({ gearchiveerd: false, ...p })),
+    projectNotities: Array.isArray(d.projectNotities) ? d.projectNotities : [],
+    projectHistorie: Array.isArray(d.projectHistorie) ? d.projectHistorie : [],
+    bestanden: Array.isArray(d.bestanden) ? d.bestanden : [],
+    partnerTypes: Array.isArray(d.partnerTypes) ? d.partnerTypes : [],
+  }
+}
+
 function migreerData(data: AppData): AppData {
-  return migreerNaarTemplates(migreerNaarLocaties(data))
+  return migreerNaarDetailplanning(migreerNaarTemplates(migreerNaarLocaties(data)))
 }
 
 function beginState(): StoreState {

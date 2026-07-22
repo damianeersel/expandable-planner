@@ -31,7 +31,7 @@ export const WERKPAKKET_TEMPLATES: Record<Exclude<FaseKey, 'salesoverdracht'>, s
 export function maakWerkpakketten(key: Exclude<FaseKey, 'salesoverdracht'>, totaalUren: number): Werkpakket[] {
   const namen = WERKPAKKET_TEMPLATES[key]
   const per = namen.length > 0 ? Math.round(totaalUren / namen.length) : 0
-  return namen.map((naam) => ({ id: uid('wp'), naam, uren: per, voortgang: 0, status: 'gepland' }))
+  return namen.map((naam) => ({ id: uid('wp'), naam, uren: per, voortgang: 0, status: 'gepland', taken: [] }))
 }
 
 /**
