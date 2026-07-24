@@ -11,6 +11,7 @@ import {
   Lock,
   LocateFixed,
   RotateCcw,
+  Search,
   Truck,
   X,
 } from 'lucide-react'
@@ -45,6 +46,7 @@ import { useApp } from '../../store/AppState'
 import {
   Badge,
   InfoTip,
+  Invoer,
   Kaart,
   Keuze,
   Knop,
@@ -155,6 +157,7 @@ export default function TijdlijnPlanning() {
   const [groepering, setGroepering] = useState<Groepering>('project')
   const [planningsType, setPlanningsType] = useState<PlanningsType>('beide')
   const [cascade, setCascade] = useState(true)
+  const [zoek, setZoek] = useState('')
   const [filters, setFilters] = useState<PlanningFilters>(LEGE_FILTERS)
   const [filterPaneel, setFilterPaneel] = useState(false)
   const [dichteGroepen, setDichteGroepen] = useState<Set<string>>(new Set())
@@ -221,10 +224,12 @@ export default function TijdlijnPlanning() {
       filters.onderaannemerId
     )
 
+    const zoekTekst = zoek.trim().toLowerCase()
     const projectVoldoet = (p: Project): boolean => {
       if (p.status === 'geannuleerd' && filters.status !== 'geannuleerd') return false
       if (planningsType === 'definitief' && p.status === 'schaduw') return false
       if (planningsType === 'schaduw' && p.status !== 'schaduw') return false
+      if (zoekTekst && !`${p.projectnummer} ${p.naam} ${p.klant}`.toLowerCase().includes(zoekTekst)) return false
       if (filters.status && p.status !== filters.status) return false
       if (filters.productModel && p.productModel !== filters.productModel) return false
       if (filters.oplevermaand && !p.gewensteOpleverdatum.startsWith(filters.oplevermaand)) return false
@@ -258,7 +263,7 @@ export default function TijdlijnPlanning() {
       fasesPer.set(p.id, fases)
     }
     return { projecten, fasesPer }
-  }, [data, filters, planningsType, projectInfo, teamMap])
+  }, [data, filters, planningsType, zoek, projectInfo, teamMap])
 
   const projectMap = useMemo(() => new Map(data.projecten.map((p) => [p.id, p])), [data.projecten])
 
@@ -462,6 +467,7 @@ export default function TijdlijnPlanning() {
   const wisFilters = () => {
     setFilters(LEGE_FILTERS)
     setPlanningsType('beide')
+    setZoek('')
   }
 
   // ---------- Filterchips ----------
@@ -514,6 +520,17 @@ export default function TijdlijnPlanning() {
 
       {/* Toolbar */}
       <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2">
+        <div className="relative">
+          <Search size={14} className="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-slate-400" />
+          <Invoer
+            value={zoek}
+            onChange={(e) => setZoek(e.target.value)}
+            placeholder="Zoek op PR-nummer, naam of klant…"
+            title="Filter de tijdlijn op projectnummer, projectnaam of klant"
+            className="!w-64 !py-1.5 !pl-8 !text-xs"
+          />
+        </div>
+
         <label className="flex items-center gap-1.5 text-xs text-slate-500">
           Groeperen
           <Keuze
@@ -707,10 +724,10 @@ export default function TijdlijnPlanning() {
           <div className="p-8">
             <LegeStaat
               titel="Geen projecten of fases gevonden"
-              tekst="De huidige combinatie van filters en planningstype levert geen resultaten op."
+              tekst="De huidige combinatie van zoekterm, filters en planningstype levert geen resultaten op."
               actie={
                 <Knop variant="primary" klein onClick={wisFilters}>
-                  Filters wissen
+                  Zoekterm en filters wissen
                 </Knop>
               }
             />

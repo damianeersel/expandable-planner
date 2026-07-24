@@ -31,6 +31,7 @@ export default function ProcesModal({ open, fase, proces, onSluiten }: Props) {
   const [start, setStart] = useState('')
   const [eind, setEind] = useState('')
   const [uren, setUren] = useState('0')
+  const [voortgang, setVoortgang] = useState('0')
   const [fout, setFout] = useState<Record<string, string>>({})
   const [partnerModalOpen, setPartnerModalOpen] = useState(false)
 
@@ -49,6 +50,7 @@ export default function ProcesModal({ open, fase, proces, onSluiten }: Props) {
       setStart(proces.start ?? '')
       setEind(proces.eind ?? '')
       setUren(String(proces.uren))
+      setVoortgang(String(proces.voortgang))
     } else {
       setNaam('')
       setOmschrijving('')
@@ -58,6 +60,7 @@ export default function ProcesModal({ open, fase, proces, onSluiten }: Props) {
       setStart('')
       setEind('')
       setUren('0')
+      setVoortgang('0')
     }
   }, [open, proces])
 
@@ -82,18 +85,25 @@ export default function ProcesModal({ open, fase, proces, onSluiten }: Props) {
     if (start && eind && eind < start) f.eind = 'De einddatum kan niet vóór de startdatum liggen.'
     const urenN = Number(uren)
     if (zonderTaken && (!Number.isFinite(urenN) || urenN < 0)) f.uren = 'Uren moet 0 of hoger zijn.'
+    const voortgangN = Number(voortgang)
+    if (zonderTaken && (!Number.isFinite(voortgangN) || voortgangN < 0 || voortgangN > 100)) {
+      f.voortgang = 'Voortgang moet tussen 0 en 100 liggen.'
+    }
     if (Object.keys(f).length > 0) {
       setFout(f)
       return
     }
+    // Zelfde afleiding als voorheen bij de voortgangsinvoer: 100% = gereed, >0% = bezig.
+    const voortgangC = Math.max(0, Math.min(100, Math.round(voortgangN)))
+    const afgeleideStatus = voortgangC >= 100 ? ('gereed' as const) : voortgangC > 0 ? ('bezig' as const) : ('gepland' as const)
     const undoActie = { label: 'Ongedaan maken', onClick: () => dispatch({ type: 'UNDO' as const }) }
     if (!proces) {
       const werkpakket: Werkpakket = {
         id: uid('wp'),
         naam: naam.trim(),
         uren: Math.max(0, Math.round(urenN)),
-        voortgang: 0,
-        status: 'gepland',
+        voortgang: voortgangC,
+        status: afgeleideStatus,
         taken: [],
         omschrijving: omschrijving.trim() || undefined,
         extraTaak: true,
@@ -115,7 +125,13 @@ export default function ProcesModal({ open, fase, proces, onSluiten }: Props) {
         start: start || undefined,
         eind: eind || undefined,
       }
-      if (zonderTaken) patch.uren = Math.max(0, Math.round(urenN))
+      if (zonderTaken) {
+        patch.uren = Math.max(0, Math.round(urenN))
+        if (voortgangC !== proces.voortgang) {
+          patch.voortgang = voortgangC
+          patch.status = afgeleideStatus
+        }
+      }
       dispatch({ type: 'WERKPAKKET_BIJWERKEN', faseId: fase.id, wpId: proces.id, patch })
       toon('succes', `Proces "${naam.trim()}" bijgewerkt.`, undoActie)
     }
@@ -186,6 +202,18 @@ export default function ProcesModal({ open, fase, proces, onSluiten }: Props) {
           {zonderTaken && (
             <Veld label="Geplande uren" fout={fout.uren}>
               <Invoer type="number" min={0} value={uren} onChange={(e) => setUren(e.target.value)} />
+            </Veld>
+          )}
+          {zonderTaken && (
+            <Veld label="Voortgang (%)" fout={fout.voortgang}>
+              <Invoer
+                type="number"
+                min={0}
+                max={100}
+                step={5}
+                value={voortgang}
+                onChange={(e) => setVoortgang(e.target.value)}
+              />
             </Veld>
           )}
         </div>
