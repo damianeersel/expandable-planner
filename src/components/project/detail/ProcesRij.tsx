@@ -11,7 +11,7 @@ import { projectFases } from '../../../lib/capacity'
 import { uid } from '../../../lib/uid'
 import { useApp } from '../../../store/AppState'
 import { Badge, BevestigDialog, Keuze, Knop, Modal, Veld, VoortgangsBalk, useToast } from '../../ui'
-import { FASE_STATUS_KLEUR, magVoortgangBijwerken, RijMenu, VoortgangInvoer, type MenuItem } from './gedeeld'
+import { FASE_STATUS_KLEUR, RijMenu, type MenuItem } from './gedeeld'
 import NotitiePopover from './NotitiePopover'
 import ProcesModal from './ProcesModal'
 import TaakRij from './TaakRij'
@@ -68,15 +68,7 @@ export default function ProcesRij({ fase, proces, onTaakNieuw, onTaakBewerken }:
 
   const telling = telTaken(proces.taken)
   const heeftTaken = proces.taken.length > 0
-  const faseTeam = fase.teamId ? data.teams.find((t) => t.id === fase.teamId) : undefined
   const magPlanning = permissies.planningBewerken
-  const magVoortgang = magVoortgangBijwerken(
-    persona.rol,
-    persona.afdeling,
-    fase,
-    permissies.voortgangBijwerken,
-    faseTeam?.afdeling,
-  )
   const verantwoordelijke = proces.verantwoordelijkeId
     ? data.medewerkers.find((m) => m.id === proces.verantwoordelijkeId)
     : undefined
@@ -87,16 +79,6 @@ export default function ProcesRij({ fase, proces, onTaakNieuw, onTaakBewerken }:
   const isExtern = proces.uitvoering === 'extern' || !!taakExtern
   const externPartijId = proces.externePartijId ?? taakExtern?.externeActie?.partijId
   const externPartner = externPartijId ? data.externePartijen.find((p) => p.id === externPartijId) : undefined
-
-  const zetVoortgang = (v: number) => {
-    dispatch({
-      type: 'WERKPAKKET_BIJWERKEN',
-      faseId: fase.id,
-      wpId: proces.id,
-      patch: { voortgang: v, status: v >= 100 ? 'gereed' : v > 0 ? 'bezig' : 'gepland' },
-    })
-    toon('succes', `Voortgang van "${proces.naam}" bijgewerkt naar ${v}%.`)
-  }
 
   const dupliceer = () => {
     const idMap = new Map<string, string>()
@@ -189,8 +171,6 @@ export default function ProcesRij({ fase, proces, onTaakNieuw, onTaakBewerken }:
         <div className="w-48 min-w-36" onClick={(e) => e.stopPropagation()}>
           {heeftTaken ? (
             <SegmentBalk taken={proces.taken} telling={telling} />
-          ) : magVoortgang ? (
-            <VoortgangInvoer waarde={proces.voortgang} onCommit={zetVoortgang} />
           ) : (
             <VoortgangsBalk pct={proces.voortgang} />
           )}
@@ -244,7 +224,8 @@ export default function ProcesRij({ fase, proces, onTaakNieuw, onTaakBewerken }:
           ) : (
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-xs text-slate-400">
-                Dit proces heeft nog geen taken; de voortgang wordt handmatig op procesniveau bijgehouden.
+                Dit proces heeft nog geen taken; de voortgang stel je in via "Proces bewerken" of laat je uit taken
+                volgen zodra die zijn toegevoegd.
               </p>
               {magPlanning && (
                 <Knop klein onClick={onTaakNieuw}>
