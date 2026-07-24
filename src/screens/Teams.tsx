@@ -6,24 +6,30 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import {
   AlertTriangle,
+  Building2,
   CalendarOff,
   FolderKanban,
   GripVertical,
+  Pencil,
   Plus,
   Search,
+  Trash2,
   UserPlus,
   Users,
   X,
 } from 'lucide-react'
 import { useApp } from '../store/AppState'
 import {
+  afdelingLabel,
   AFDELING_LABELS,
   AFWEZIGHEID_LABELS,
+  isProductieAfdeling,
   PRODUCTIE_AFDELINGEN,
   SCENARIO_LABELS,
   type Afdeling,
   type ISODate,
   type Medewerker,
+  type OverigeAfdeling,
   type Team,
 } from '../lib/types'
 import { addDagen, formatDatum, formatDatumKort, startVanWeek, vandaagISO, weekLabel } from '../lib/dates'
@@ -594,8 +600,8 @@ function MedewerkerModal({
 }: {
   open: boolean
   medewerkerId: string | null
-  afdelingen: Afdeling[]
-  standaardAfdeling: Afdeling
+  afdelingen: string[]
+  standaardAfdeling: string
   onSluiten: () => void
 }) {
   const { data, dispatch } = useApp()
@@ -605,7 +611,7 @@ function MedewerkerModal({
 
   const [naam, setNaam] = useState('')
   const [functie, setFunctie] = useState('')
-  const [afdeling, setAfdeling] = useState<Afdeling>(standaardAfdeling)
+  const [afdeling, setAfdeling] = useState<string>(standaardAfdeling)
   const [teamId, setTeamId] = useState('')
   const [vaardigheden, setVaardigheden] = useState<string[]>([])
   const [nieuweVaardigheid, setNieuweVaardigheid] = useState('')
@@ -638,8 +644,9 @@ function MedewerkerModal({
   }, [afdelingen, bestaand])
 
   const teamOpties = data.teams.filter((t) => t.afdeling === afdeling)
+  const isOverigeAfdeling = !isProductieAfdeling(afdeling)
 
-  function kiesAfdeling(nieuw: Afdeling) {
+  function kiesAfdeling(nieuw: string) {
     setAfdeling(nieuw)
     if (teamId && !data.teams.some((t) => t.id === teamId && t.afdeling === nieuw)) setTeamId('')
   }
@@ -736,16 +743,16 @@ function MedewerkerModal({
             <Invoer value={functie} onChange={(e) => setFunctie(e.target.value)} placeholder="Bijv. Lasser" />
           </Veld>
           <Veld label="Afdeling">
-            <Keuze value={afdeling} onChange={(e) => kiesAfdeling(e.target.value as Afdeling)}>
+            <Keuze value={afdeling} onChange={(e) => kiesAfdeling(e.target.value)}>
               {afdelingOpties.map((a) => (
                 <option key={a} value={a}>
-                  {AFDELING_LABELS[a]}
+                  {afdelingLabel(a, data.overigeAfdelingen)}
                 </option>
               ))}
             </Keuze>
           </Veld>
           <Veld label="Primair team">
-            <Keuze value={teamId} onChange={(e) => setTeamId(e.target.value)}>
+            <Keuze value={teamId} onChange={(e) => setTeamId(e.target.value)} disabled={isOverigeAfdeling}>
               <option value="">Geen team</option>
               {teamOpties.map((t) => (
                 <option key={t.id} value={t.id}>
@@ -773,6 +780,13 @@ function MedewerkerModal({
             />
           </Veld>
         </div>
+
+        {isOverigeAfdeling && (
+          <p className="rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-500">
+            Deze afdeling telt niet mee in de productiecapaciteitsplanning. Verlof en beschikbaarheid worden wél
+            bijgehouden.
+          </p>
+        )}
 
         <Veld label="Vaardigheden">
           <div>
@@ -965,15 +979,27 @@ function TeamModal({
 // ---------- Hoofdscherm ----------
 
 export default function Teams() {
-  const { data, ui, persona, permissies } = useApp()
+  const { data, ui, persona, permissies, dispatch } = useApp()
   const { toon } = useToast()
 
   const vandaag = vandaagISO()
   const weekStart = startVanWeek(vandaag)
   const magBeheren = permissies.teamsBeheren
+  // Overige (niet-productie) afdelingen mag alleen de planner beheren.
+  const magAfdelingen = magBeheren && persona.rol !== 'productieleider'
 
-  const zichtbareAfdelingen: Afdeling[] =
+  const overigeGesorteerd = useMemo(
+    () => data.overigeAfdelingen.slice().sort((a, b) => a.volgorde - b.volgorde),
+    [data.overigeAfdelingen],
+  )
+
+  // Productieafdelingen (voor teams) en alle zichtbare afdelingen (productie + overige, voor de planner).
+  const productieAfdelingen: Afdeling[] =
     persona.rol === 'productieleider' && persona.afdeling ? [persona.afdeling] : PRODUCTIE_AFDELINGEN
+  const zichtbareAfdelingen: string[] =
+    persona.rol === 'productieleider' && persona.afdeling
+      ? [persona.afdeling]
+      : [...PRODUCTIE_AFDELINGEN, ...overigeGesorteerd.map((a) => a.id)]
 
   // Drag-and-drop-state
   const [sleepId, setSleepId] = useState<string | null>(null)
@@ -984,6 +1010,8 @@ export default function Teams() {
   const [bewerkId, setBewerkId] = useState<string | null>(null)
   const [nieuwMedewerkerOpen, setNieuwMedewerkerOpen] = useState(false)
   const [nieuwTeamOpen, setNieuwTeamOpen] = useState(false)
+  const [afdelingModal, setAfdelingModal] = useState<{ bestaand?: OverigeAfdeling } | null>(null)
+  const [afdelingVerwijderen, setAfdelingVerwijderen] = useState<OverigeAfdeling | null>(null)
 
   // Tabel
   const [zoek, setZoek] = useState('')
@@ -1007,7 +1035,14 @@ export default function Teams() {
     setVerplaats({ medewerkerId: id, doelTeamId })
   }
 
-  function productieleidersVan(afd: Afdeling): Medewerker[] {
+  function verwijderAfdeling() {
+    if (!afdelingVerwijderen) return
+    dispatch({ type: 'AFDELING_VERWIJDEREN', id: afdelingVerwijderen.id })
+    toon('succes', `Afdeling "${afdelingVerwijderen.naam}" is verwijderd.`)
+    setAfdelingVerwijderen(null)
+  }
+
+  function productieleidersVan(afd: string): Medewerker[] {
     const plIds = new Set(
       data.teams.filter((t) => t.afdeling === afd && t.productieleiderId).map((t) => t.productieleiderId as string),
     )
@@ -1023,7 +1058,7 @@ export default function Teams() {
     .filter((m) => {
       if (!q) return true
       const teamNaam = data.teams.find((t) => t.id === m.teamId)?.naam ?? ''
-      return [m.naam, m.functie, AFDELING_LABELS[m.afdeling], teamNaam, m.vaardigheden.join(' ')]
+      return [m.naam, m.functie, afdelingLabel(m.afdeling, data.overigeAfdelingen), teamNaam, m.vaardigheden.join(' ')]
         .join(' ')
         .toLowerCase()
         .includes(q)
@@ -1042,6 +1077,12 @@ export default function Teams() {
         rechts={
           magBeheren ? (
             <>
+              {magAfdelingen && (
+                <Knop onClick={() => setAfdelingModal({})}>
+                  <Building2 size={15} />
+                  Afdeling toevoegen
+                </Knop>
+              )}
               <Knop onClick={() => setNieuwTeamOpen(true)}>
                 <Users size={15} />
                 Nieuw team
@@ -1061,67 +1102,136 @@ export default function Teams() {
       )}
 
       {zichtbareAfdelingen.map((afd) => {
+        const isOverig = !isProductieAfdeling(afd)
+        const overigDef = overigeGesorteerd.find((a) => a.id === afd)
+        const label = afdelingLabel(afd, data.overigeAfdelingen)
         const afdTeams = data.teams.filter((t) => t.afdeling === afd)
-        const productieleiders = productieleidersVan(afd)
-        const aantalActief = data.medewerkers.filter((m) => m.afdeling === afd && m.actief).length
+        const productieleiders = isOverig ? [] : productieleidersVan(afd)
+        const ledenVanAfd = data.medewerkers.filter((m) => m.afdeling === afd).sort(sorteerOpNaam)
+        const aantalActief = ledenVanAfd.filter((m) => m.actief).length
         return (
           <section key={afd} className="mb-8">
             <div className="mb-2 flex items-center gap-2">
-              <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">{AFDELING_LABELS[afd]}</h2>
-              <Badge kleur="grijs">
-                {afdTeams.length} {afdTeams.length === 1 ? 'team' : 'teams'} · {aantalActief} medewerkers
-              </Badge>
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">{label}</h2>
+              {isOverig ? (
+                <>
+                  <Badge kleur="grijs">
+                    {aantalActief} medewerker{aantalActief === 1 ? '' : 's'}
+                  </Badge>
+                  <Badge kleur="amber">Niet in productiecapaciteit</Badge>
+                  {magAfdelingen && overigDef && (
+                    <span className="flex items-center gap-0.5">
+                      <button
+                        type="button"
+                        title="Afdeling hernoemen"
+                        onClick={() => setAfdelingModal({ bestaand: overigDef })}
+                        className="rounded p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+                      >
+                        <Pencil size={13} />
+                      </button>
+                      <button
+                        type="button"
+                        title={
+                          ledenVanAfd.length > 0
+                            ? 'Verwijder eerst de medewerkers uit deze afdeling'
+                            : 'Afdeling verwijderen'
+                        }
+                        disabled={ledenVanAfd.length > 0}
+                        onClick={() => setAfdelingVerwijderen(overigDef)}
+                        className="rounded p-1 text-slate-400 transition-colors hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </span>
+                  )}
+                </>
+              ) : (
+                <Badge kleur="grijs">
+                  {afdTeams.length} {afdTeams.length === 1 ? 'team' : 'teams'} · {aantalActief} medewerkers
+                </Badge>
+              )}
             </div>
 
-            {productieleiders.length > 0 && (
-              <div className="mb-3 flex flex-wrap items-center gap-2">
-                <span className="text-xs font-medium text-slate-500">Productieleiding:</span>
-                {productieleiders.map((pl) => (
-                  <LidChip
-                    key={pl.id}
-                    medewerker={pl}
-                    gedimd={!pl.actief}
-                    sleepbaar={magBeheren && pl.actief}
-                    klikbaar={magBeheren}
-                    onKlik={() => setBewerkId(pl.id)}
-                    onSleepStart={() => setSleepId(pl.id)}
-                    onSleepEind={() => {
-                      setSleepId(null)
-                      setDropTeamId(null)
-                    }}
+            {isOverig ? (
+              <>
+                <p className="mb-3 text-xs text-slate-400">
+                  Capaciteit telt niet mee in de productieplanning; verlof en beschikbaarheid worden wél bijgehouden.
+                </p>
+                {ledenVanAfd.length === 0 ? (
+                  <LegeStaat
+                    titel={`Nog geen medewerkers in ${label}`}
+                    tekst={magBeheren ? 'Voeg een medewerker toe via "Nieuwe medewerker" en kies deze afdeling.' : undefined}
                   />
-                ))}
-              </div>
-            )}
-
-            {afdTeams.length === 0 ? (
-              <LegeStaat
-                titel={`Nog geen teams in ${AFDELING_LABELS[afd]}`}
-                tekst={magBeheren ? 'Maak een team aan via de knop "Nieuw team" rechtsboven.' : undefined}
-              />
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    {ledenVanAfd.map((m) => (
+                      <LidChip
+                        key={m.id}
+                        medewerker={m}
+                        gedimd={!m.actief}
+                        sleepbaar={false}
+                        klikbaar={magBeheren}
+                        onKlik={() => setBewerkId(m.id)}
+                        onSleepStart={() => {}}
+                        onSleepEind={() => {}}
+                      />
+                    ))}
+                  </div>
+                )}
+              </>
             ) : (
-              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                {afdTeams.map((team) => (
-                  <TeamKaart
-                    key={team.id}
-                    team={team}
-                    weekStart={weekStart}
-                    vandaag={vandaag}
-                    magBeheren={magBeheren}
-                    sleepId={sleepId}
-                    dropTeamId={dropTeamId}
-                    onSleepStart={(id) => setSleepId(id)}
-                    onSleepEind={() => {
-                      setSleepId(null)
-                      setDropTeamId(null)
-                    }}
-                    onSleepOver={(teamId) => setDropTeamId((huidig) => (huidig === teamId ? huidig : teamId))}
-                    onSleepVerlaat={(teamId) => setDropTeamId((huidig) => (huidig === teamId ? null : huidig))}
-                    onSleepDrop={handleSleepDrop}
-                    onLidKlik={(id) => setBewerkId(id)}
+              <>
+                {productieleiders.length > 0 && (
+                  <div className="mb-3 flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-medium text-slate-500">Productieleiding:</span>
+                    {productieleiders.map((pl) => (
+                      <LidChip
+                        key={pl.id}
+                        medewerker={pl}
+                        gedimd={!pl.actief}
+                        sleepbaar={magBeheren && pl.actief}
+                        klikbaar={magBeheren}
+                        onKlik={() => setBewerkId(pl.id)}
+                        onSleepStart={() => setSleepId(pl.id)}
+                        onSleepEind={() => {
+                          setSleepId(null)
+                          setDropTeamId(null)
+                        }}
+                      />
+                    ))}
+                  </div>
+                )}
+
+                {afdTeams.length === 0 ? (
+                  <LegeStaat
+                    titel={`Nog geen teams in ${label}`}
+                    tekst={magBeheren ? 'Maak een team aan via de knop "Nieuw team" rechtsboven.' : undefined}
                   />
-                ))}
-              </div>
+                ) : (
+                  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                    {afdTeams.map((team) => (
+                      <TeamKaart
+                        key={team.id}
+                        team={team}
+                        weekStart={weekStart}
+                        vandaag={vandaag}
+                        magBeheren={magBeheren}
+                        sleepId={sleepId}
+                        dropTeamId={dropTeamId}
+                        onSleepStart={(id) => setSleepId(id)}
+                        onSleepEind={() => {
+                          setSleepId(null)
+                          setDropTeamId(null)
+                        }}
+                        onSleepOver={(teamId) => setDropTeamId((huidig) => (huidig === teamId ? huidig : teamId))}
+                        onSleepVerlaat={(teamId) => setDropTeamId((huidig) => (huidig === teamId ? null : huidig))}
+                        onSleepDrop={handleSleepDrop}
+                        onLidKlik={(id) => setBewerkId(id)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </>
             )}
           </section>
         )
@@ -1185,7 +1295,7 @@ export default function Teams() {
                     >
                       <td className="px-4 py-2 font-medium text-slate-800">{m.naam}</td>
                       <td className="px-4 py-2 text-slate-600">{m.functie || '—'}</td>
-                      <td className="px-4 py-2 text-slate-600">{AFDELING_LABELS[m.afdeling]}</td>
+                      <td className="px-4 py-2 text-slate-600">{afdelingLabel(m.afdeling, data.overigeAfdelingen)}</td>
                       <td className="px-4 py-2 text-slate-600">
                         {team?.naam ?? '—'}
                         {tijdelijk && (
@@ -1225,10 +1335,101 @@ export default function Teams() {
       />
       <TeamModal
         open={nieuwTeamOpen}
-        afdelingen={zichtbareAfdelingen}
-        standaardAfdeling={zichtbareAfdelingen[0]}
+        afdelingen={productieAfdelingen}
+        standaardAfdeling={productieAfdelingen[0]}
         onSluiten={() => setNieuwTeamOpen(false)}
       />
+      <AfdelingModal
+        open={afdelingModal !== null}
+        bestaand={afdelingModal?.bestaand}
+        volgendeVolgorde={overigeGesorteerd.length + 1}
+        onSluiten={() => setAfdelingModal(null)}
+      />
+      <BevestigDialog
+        open={afdelingVerwijderen !== null}
+        titel="Afdeling verwijderen"
+        gevaarlijk
+        bevestigLabel="Verwijderen"
+        tekst={
+          afdelingVerwijderen
+            ? `Weet je zeker dat je de afdeling "${afdelingVerwijderen.naam}" wilt verwijderen?`
+            : undefined
+        }
+        onBevestig={verwijderAfdeling}
+        onAnnuleer={() => setAfdelingVerwijderen(null)}
+      />
     </div>
+  )
+}
+
+// ---------- Afdeling toevoegen / hernoemen ----------
+
+function AfdelingModal({
+  open,
+  bestaand,
+  volgendeVolgorde,
+  onSluiten,
+}: {
+  open: boolean
+  bestaand?: OverigeAfdeling
+  volgendeVolgorde: number
+  onSluiten: () => void
+}) {
+  const { dispatch } = useApp()
+  const { toon } = useToast()
+  const [naam, setNaam] = useState('')
+  const [fout, setFout] = useState<string | undefined>()
+
+  useEffect(() => {
+    if (!open) return
+    setNaam(bestaand?.naam ?? '')
+    setFout(undefined)
+  }, [open, bestaand])
+
+  function opslaan() {
+    const n = naam.trim()
+    if (!n) {
+      setFout('Een afdelingsnaam is verplicht.')
+      return
+    }
+    if (bestaand) {
+      dispatch({ type: 'AFDELING_BIJWERKEN', id: bestaand.id, naam: n })
+      toon('succes', `Afdeling hernoemd naar "${n}".`)
+    } else {
+      dispatch({ type: 'AFDELING_TOEVOEGEN', afdeling: { id: uid('afd'), naam: n, volgorde: volgendeVolgorde } })
+      toon('succes', `Afdeling "${n}" is toegevoegd.`)
+    }
+    onSluiten()
+  }
+
+  return (
+    <Modal
+      open={open}
+      titel={bestaand ? 'Afdeling hernoemen' : 'Afdeling toevoegen'}
+      onSluiten={onSluiten}
+      voettekst={
+        <>
+          <Knop onClick={onSluiten}>Annuleren</Knop>
+          <Knop variant="primary" onClick={opslaan}>
+            {bestaand ? 'Opslaan' : 'Toevoegen'}
+          </Knop>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-3">
+        <Veld label="Afdelingsnaam" verplicht fout={fout}>
+          <Invoer
+            value={naam}
+            onChange={(e) => setNaam(e.target.value)}
+            placeholder="Bijv. Sales & Commercie"
+            onKeyDown={(e) => e.key === 'Enter' && opslaan()}
+          />
+        </Veld>
+        <p className="rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-500">
+          Overige afdelingen dragen bij aan de bedrijfsvoering maar tellen niet mee in de
+          productiecapaciteitsplanning. Medewerkers hier worden wél gevolgd voor verlof en beschikbaarheid.
+        </p>
+      </div>
+    </Modal>
   )
 }

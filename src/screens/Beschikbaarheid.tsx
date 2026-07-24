@@ -6,6 +6,7 @@ import { Fragment, useMemo, useState } from 'react'
 import { ArrowRight, CalendarDays, ChevronLeft, ChevronRight, Plus, Search, Trash2 } from 'lucide-react'
 import { useApp } from '../store/AppState'
 import {
+  afdelingLabel,
   AFDELING_LABELS,
   AFWEZIGHEID_LABELS,
   PRODUCTIE_AFDELINGEN,
@@ -319,7 +320,7 @@ export default function Beschikbaarheid() {
 
   const [weergave, setWeergave] = useState<'week' | 'maand'>('week')
   const [weekStart, setWeekStart] = useState<ISODate>(huidigeWeekStart)
-  const [afdelingFilter, setAfdelingFilter] = useState<'alle' | Afdeling>('alle')
+  const [afdelingFilter, setAfdelingFilter] = useState<string>('alle')
   const [teamFilter, setTeamFilter] = useState('alle')
   const [zoek, setZoek] = useState('')
 
@@ -544,7 +545,7 @@ export default function Beschikbaarheid() {
           <Keuze
             value={afdelingFilter}
             onChange={(e) => {
-              const a = e.target.value as 'alle' | Afdeling
+              const a = e.target.value
               setAfdelingFilter(a)
               if (a !== 'alle') {
                 const t = data.teams.find((x) => x.id === teamFilter)
@@ -560,6 +561,18 @@ export default function Beschikbaarheid() {
                 {AFDELING_LABELS[a]}
               </option>
             ))}
+            {data.overigeAfdelingen.length > 0 && (
+              <optgroup label="Overige afdelingen">
+                {data.overigeAfdelingen
+                  .slice()
+                  .sort((x, y) => x.volgorde - y.volgorde)
+                  .map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.naam}
+                    </option>
+                  ))}
+              </optgroup>
+            )}
           </Keuze>
           <Keuze
             value={teamFilter}
@@ -711,7 +724,7 @@ export default function Beschikbaarheid() {
                   return (
                     <Fragment key={g.id}>
                       {g.leden.map((mw) => {
-                        const eigenTeam = teamNaam(mw.teamId) ?? AFDELING_LABELS[mw.afdeling]
+                        const eigenTeam = teamNaam(mw.teamId) ?? afdelingLabel(mw.afdeling, data.overigeAfdelingen)
                         const t = mw.tijdelijkTeam
                         const tijdelijkActief = t !== undefined && t.van <= periodeEind && t.tot >= weekStart
                         return (

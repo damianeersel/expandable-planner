@@ -14,6 +14,7 @@ import type {
   ISODate,
   LocatieMutatie,
   Medewerker,
+  OverigeAfdeling,
   Permissies,
   Persona,
   ProductTemplate,
@@ -130,6 +131,9 @@ export type Action =
   | { type: 'PARTNER_TOEVOEGEN'; partij: ExternePartij }
   | { type: 'PARTNER_VERWIJDEREN'; id: string }
   | { type: 'PARTNERTYPE_TOEVOEGEN'; naam: string }
+  | { type: 'AFDELING_TOEVOEGEN'; afdeling: OverigeAfdeling }
+  | { type: 'AFDELING_BIJWERKEN'; id: string; naam: string }
+  | { type: 'AFDELING_VERWIJDEREN'; id: string }
 
 interface StoreState {
   data: AppData
@@ -748,6 +752,27 @@ function pasDataToe(data: AppData, action: Action): AppData {
       return { ...data, partnerTypes: [...data.partnerTypes, naam] }
     }
 
+    case 'AFDELING_TOEVOEGEN': {
+      const naam = action.afdeling.naam.trim()
+      if (!naam) return data
+      return { ...data, overigeAfdelingen: [...data.overigeAfdelingen, { ...action.afdeling, naam }] }
+    }
+
+    case 'AFDELING_BIJWERKEN': {
+      const naam = action.naam.trim()
+      if (!naam) return data
+      return {
+        ...data,
+        overigeAfdelingen: data.overigeAfdelingen.map((a) => (a.id === action.id ? { ...a, naam } : a)),
+      }
+    }
+
+    case 'AFDELING_VERWIJDEREN': {
+      // Alleen verwijderen als geen enkele medewerker deze afdeling gebruikt.
+      if (data.medewerkers.some((m) => m.afdeling === action.id)) return data
+      return { ...data, overigeAfdelingen: data.overigeAfdelingen.filter((a) => a.id !== action.id) }
+    }
+
     default:
       return data
   }
@@ -872,7 +897,7 @@ function migreerNaarDetailplanning(data: AppData): AppData {
   const d = data as Partial<AppData> & AppData
   const takenOntbreken = d.fases.some((f) => f.werkpakketten.some((wp) => !Array.isArray(wp.taken)))
   const veldenOntbreken =
-    !Array.isArray(d.projectNotities) || !Array.isArray(d.projectHistorie) || !Array.isArray(d.bestanden) || !Array.isArray(d.partnerTypes)
+    !Array.isArray(d.projectNotities) || !Array.isArray(d.projectHistorie) || !Array.isArray(d.bestanden) || !Array.isArray(d.partnerTypes) || !Array.isArray(d.overigeAfdelingen)
   if (!takenOntbreken && !veldenOntbreken) return data
   return {
     ...data,
@@ -885,6 +910,7 @@ function migreerNaarDetailplanning(data: AppData): AppData {
     projectHistorie: Array.isArray(d.projectHistorie) ? d.projectHistorie : [],
     bestanden: Array.isArray(d.bestanden) ? d.bestanden : [],
     partnerTypes: Array.isArray(d.partnerTypes) ? d.partnerTypes : [],
+    overigeAfdelingen: Array.isArray(d.overigeAfdelingen) ? d.overigeAfdelingen : [],
   }
 }
 

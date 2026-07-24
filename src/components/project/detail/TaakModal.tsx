@@ -6,7 +6,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { AlertTriangle, Plus, X } from 'lucide-react'
 import type { Afdeling, ExterneActieStatus, Fase, ISODate, Medewerker, Prioriteit, Project, Taak } from '../../../lib/types'
-import { AFDELING_LABELS, EXTERNE_ACTIE_LABELS, PRIORITEIT_LABELS } from '../../../lib/types'
+import { afdelingLabel, AFDELING_LABELS, EXTERNE_ACTIE_LABELS, PRIORITEIT_LABELS } from '../../../lib/types'
 import {
   addDagen,
   diffDagen,
@@ -818,7 +818,7 @@ export default function TaakModal({ open, project, plek, initFaseId, initWpId, f
                           />
                           <span className="text-sm text-slate-700">{m.naam}</span>
                           <span className="min-w-0 flex-1 truncate text-xs text-slate-400">
-                            {m.functie} · {AFDELING_LABELS[m.afdeling]}
+                            {m.functie} · {afdelingLabel(m.afdeling, data.overigeAfdelingen)}
                           </span>
                           {ind.afwezig && <span className="shrink-0 text-[11px] text-amber-600">afwezig</span>}
                         </label>
