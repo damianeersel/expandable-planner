@@ -1,127 +1,131 @@
 # JM Construct — chassisplanning (voorstel)
 
-**Status:** concept 0.3 · feedback Damian 24-07-2026 verwerkt · ter afstemming met JM Construct
-**Doel van dit document:** vastleggen wat er gebouwd gaat worden voor de gezamenlijke chassisplanning met JM Construct. De uitgangspunten in §9 zijn intern vastgesteld; §10 bevat wat nog met JM wordt afgestemd.
+**Status:** concept 0.4 · feedback Damian 24-07-2026 verwerkt · ter afstemming met JM Construct
+**Doel van dit document:** vastleggen wat er gebouwd gaat worden voor de gezamenlijke chassisplanning met JM Construct. De uitgangspunten in §9 zijn intern vastgesteld; §10 bevat wat nog moet worden bepaald (o.a. doorlooptijden).
 
 ---
 
 ## 1. Doel & context
 
-JM Construct bouwt chassis voor Expandable. Bij het **plaatsen van een chassisorder kent Expandable direct per chassis een PR-nummer toe** — hetzelfde PR-nummer dat daarna in de productieplanning de enige identificatie van project én trailer is. Gerede chassis blijven **op voorraad bij JM** totdat Expandable ze **oproept voor productie**.
+JM Construct bouwt chassis voor Expandable. Een order (batch) kan **meerdere chassis** bevatten; **elk chassis heeft een eigen PR-nummer én een eigen IO-nummer** (inkoopnummer). Het PR-nummer komt uit **Business Central** en wordt door Expandable handmatig ingevuld — het is hetzelfde PR-nummer dat daarna in de productieplanning de enige identificatie van project én trailer is.
+
+Een chassis wordt niet in één keer gebouwd: JM maakt eerst de **chassisbalk**; die blijft daarna **bij JM op voorraad** tot Expandable het chassis **oproept voor productie**, waarna JM het chassis afmaakt en Expandable het ophaalt.
 
 Vandaag wordt dit bijgehouden in een los **Excel-overzicht** — welke orders lopen er bij JM, hoe ver zijn ze, welke chassis staan er per model op voorraad en welke zijn al aan een (schaduw)project gekoppeld — dat losstaat van de planner en handmatig actueel gehouden moet worden. Deze JM-planning vervangt dat Excel-overzicht en brengt het in de app, gekoppeld aan de projecten.
 
-Er komt daarom een **aparte JM-planning** in de app, opgezet zoals het bestaande Planning-scherm: drie weergaven naast elkaar in één tabbalk — **Tijdsplanning**, **Capaciteitsplanning** en **Locatieplanning**. De planning is bedoeld om **samen met JM Construct** in te werken: JM vult het eigen ordernummer aan en werkt statussen en data bij; Expandable plaatst orders, roept chassis op en beheert de koppeling met projecten.
+De planning wordt opgezet zoals het bestaande Planning-scherm: drie weergaven naast elkaar in één tabbalk — **Tijdsplanning**, **Capaciteitsplanning** en **Locatieplanning** — en is bedoeld om **samen met JM Construct** in te werken.
 
 ## 2. Kernprincipes
 
-1. **Het PR-nummer wordt bij orderplaatsing ingevuld.** Het PR-nummer komt uit **Business Central** en wordt door Expandable **handmatig** per chassis in de planner ingevuld bij het plaatsen van de order (de planner genereert het niet zelf). Een project dat later op dat chassis wordt gepland, neemt dat PR-nummer over — er ontstaat nooit een tweede nummer.
-2. **Voorraad ligt bij JM.** Gerede chassis blijven bij JM staan tot Expandable ze oproept voor productie. De planning maakt per model zichtbaar wat op voorraad staat, wat gereserveerd is en wat vrij beschikbaar is.
+1. **Elk chassis heeft een eigen PR-nummer én IO-nummer.** Een order is in feite een **batch chassis**: via een form laad je in één keer meerdere chassis in, elk met een PR-nummer (uit Business Central, handmatig door Expandable) en een eigen IO-nummer. **Er is geen overkoepelend order-IO meer.** Een project dat later op een chassis wordt gepland, neemt dat PR-nummer over — er ontstaat nooit een tweede nummer.
+2. **Chassis blijven bij JM tot afroep.** Zodra de **chassisbalk klaar** is, wordt het chassis in Business Central op voorraad geboekt (eerste 40% gefactureerd) maar blijft het **fysiek bij JM**. Expandable **roept het chassis op** wanneer het nodig is; pas daarna maakt JM het chassis af en haalt Expandable het op (resterende 60%).
 3. **Voorraadgedreven plannen.** Een schaduwproject kiest uit de beschikbare chassis van het gewenste model; zonder beschikbaar chassis is direct zichtbaar dat er eerst een chassisorder nodig is.
 4. **Eén gedeelde werkelijkheid met JM.** JM ziet en bewerkt de JM-planning (JM-ordernummer, statussen, data); Expandable ziet daarnaast de koppeling met projecten. JM krijgt géén toegang tot de rest van de applicatie.
 
 ## 3. Datamodel
 
-### 3.1 Chassisorder
+### 3.1 Order (batch) — één trailertype per order
 
-Een order bij JM Construct; kan uit **meerdere chassis** bestaan, altijd **één trailertype per order**.
+Een order is een **batch chassis** die via één form wordt ingeladen. De order zelf heeft **geen IO-nummer** meer; dat zit per chassis.
 
 | Veld | Type | Verplicht | Toelichting |
 |---|---|---|---|
-| `ordernummer` | string | ja | Volgnummer van Expandable-zijde (bijv. `CO-2026-014`). |
-| `ioNummer` | string | ja | **Inkoopnummer (IO)** van Expandable; vastgelegd bij plaatsing. |
+| `ordernummer` | string | ja | Volgnummer/batch van Expandable-zijde (bijv. `CO-2026-014`). |
 | `jmOrdernummer` | string | later, door JM | Ordernummer in de administratie van JM; **JM vult dit zelf aan** na plaatsing. |
-| `revisienummer` | string (vrij) | ja | **Open tekstveld dat Expandable zelf invult** (bijv. `R2`); revisie geldt per order, voor alle chassis in de order. |
+| `revisienummer` | string (vrij) | ja | **Open tekstveld dat Expandable zelf invult** (bijv. `R2`); geldt per order, voor alle chassis in de batch. |
 | `trailertype` | string | ja | Eén type per order: E7P … E16HU. |
-| `aantal` | number | ja | Aantal chassis in de order (≥ 1). |
-| `orderstatus` | enum | ja | `planning` → `in_productie` → `gereed_voor_levering` (§3.3). |
-| `verwachteOpleverdatum` | datum | ja | Verwachte datum waarop de chassis gereed zijn (op voorraad bij JM). |
+| `aantal` | number | afgeleid | Aantal chassis in de batch (= aantal chassisregels). |
+| `verwachteChassisbalkDatum` | datum | ja | Verwachte datum waarop de chassisbalken klaar zijn (op voorraad bij JM). |
+| `voortgang` | afgeleid | — | Samenvatting van de chassisstatussen (bijv. "3/5 chassisbalk klaar"). |
 | `geplaatsteOp` / `besteldDoor` | datum/string | ja | Traceerbaarheid. |
 | `notities` | string | nee | Vrij veld (bijv. afwijkingen, transportafspraken). |
 | `bijlagen` | bestand[] | nee | **Bestanden van elk type** (tekeningen, specificaties, foto's, PDF's, …) bij de order — via de bestaande bestandsopslag, zoals bij projecten. |
 
-### 3.2 Chassis (individueel exemplaar)
+### 3.2 Chassis (individueel exemplaar) — de kern
 
 | Veld | Type | Verplicht | Toelichting |
 |---|---|---|---|
 | `id` | string | ja | Interne id (niet zichtbaar). |
-| `orderId` | string | ja | Herkomstorder. |
-| `prNummer` | string | ja | **Uit Business Central, handmatig ingevuld** bij orderplaatsing (PR + 4 cijfers, uniek over projecten én voorraad); dit wordt later het projectnummer. |
-| `status` | enum | ja | Fysiek: `in_productie` → `op_voorraad_jm` → `opgeroepen` → `geleverd` (§3.3). |
+| `orderId` | string | ja | Herkomst-batch. |
+| `prNummer` | string | ja | **Uit Business Central, handmatig ingevuld**, per chassis (PR + 4 cijfers, uniek over projecten én voorraad); wordt later het projectnummer. |
+| `ioNummer` | string | ja | **Eigen inkoopnummer (IO)** per chassis. |
+| `status` | enum | ja | Fysieke status (§3.3): `in_productie` → `chassisbalk_klaar` → `opgeroepen` → `wordt_afgemaakt` → `gereed_voor_ophalen` → `opgehaald`. |
 | `koppeling` | enum | ja | Los van de fysieke status: `vrij` → `gereserveerd` (schaduwproject) → `gekoppeld` (definitief project). |
 | `projectId` | string | nee | Gekoppeld project (vanaf reservering). |
-| `opgeroepenOp` / `geleverdOp` | datum | nee | Afroep- en leverdatum. |
-| `locatie` | string | nee | Bij JM · onderweg · Opslag-plaats bij Expandable (na levering, via bestaande plattegrond). |
+| `chassisbalkKlaarOp` / `opgeroepenOp` / `opgehaaldOp` | datum | nee | Mijlpaaldata. |
+| `locatie` | string | nee | Bij JM · onderweg · Opslag-plaats bij Expandable (na ophalen). |
 
 ### 3.3 Statusflow
 
-Orderstatussen (zichtbaar voor JM én Expandable): **Planning**, **In productie**, **Gereed voor levering**. De order is afgerond zodra alle chassis op voorraad bij JM staan. Statuswissels worden gelogd (wie, wanneer) in een orderhistorie, zoals de bestaande projecthistorie.
+De fysieke status wordt **per chassis** bijgehouden (afroep gebeurt per chassis). De order toont een samenvatting.
 
 ```mermaid
 flowchart LR
   subgraph Fysiek["Chassis — fysieke status"]
-    CIP["In productie bij JM"] --> OV["Op voorraad bij JM"] --> OPG["Opgeroepen voor productie"] --> GEL["Geleverd · Opslag Expandable"]
+    A["In productie bij JM"] --> B["Chassisbalk klaar<br/>gemeld door JM · BC 40%"] --> C["Opgeroepen<br/>door Expandable"] --> D["Chassis afgemaakt<br/>door JM"] --> E["Gereed voor ophalen"] --> F["Opgehaald<br/>Opslag Expandable · BC 60%"]
   end
-  subgraph Koppeling["Chassis — koppeling (los van fysieke status)"]
-    VRIJ["Vrij"] --> RESV["Gereserveerd<br/>schaduwproject"] --> KOP["Gekoppeld<br/>definitief project"]
-    RESV -. project vervalt .-> VRIJ
+  subgraph Koppeling["Chassis — koppeling (los van de fysieke status)"]
+    V["Vrij"] --> R["Gereserveerd<br/>schaduwproject"] --> K["Gekoppeld<br/>definitief project"]
+    R -. project vervalt .-> V
   end
 ```
 
-Een chassis kan dus al **gereserveerd** zijn voor een schaduwproject terwijl het nog **op voorraad bij JM** staat; het PR-nummer is er vanaf de orderplaatsing.
+**Business Central — facturatie per IO (2 artikelen):** elke IO bestaat uit twee artikelen. Zodra de **chassisbalk klaar** is, wordt **40%** gefactureerd en het chassis in BC **op voorraad** geboekt — de trailer blijft fysiek bij JM. Bij het **ophalen** (na afmaken) wordt de resterende **60%** gefactureerd en het tweede artikel geboekt. De planner spiegelt deze statussen; Business Central verzorgt de facturatie.
+
+Een chassis kan al **gereserveerd** zijn voor een schaduwproject terwijl het nog **op voorraad bij JM** staat; het PR-nummer is er vanaf de orderplaatsing.
 
 ## 4. Schermen
 
 Nieuw hoofdmenu-item **"JM Construct"** (onder Planning), met dezelfde tabstructuur als Planning:
 
 ### 4.1 Tijdsplanning
-Tijdlijn van alle chassisorders: één balk per order van plaatsing tot verwachte opleverdatum, kleur per orderstatus, vandaag-lijn, en per order het aantal chassis, trailertype, revisie en de toegekende PR-nummers. Vertraging (nieuwe leverdatum later dan de vorige) wordt gemarkeerd, zoals bij externe partijen nu al werkt. Boven de tijdlijn: zoekbalk (o.a. op PR-, IO- en JM-nummer) en statusfilter.
+Tijdlijn van alle orders/chassis: balken van plaatsing tot verwachte chassisbalk-datum en verder tot ophalen, kleur per fysieke status, vandaag-lijn, en per chassis het PR-, IO- en trailertype. Vertraging wordt gemarkeerd, zoals bij externe partijen nu al werkt. Boven de tijdlijn: zoekbalk (o.a. op PR-, IO- en JM-nummer) en statusfilter.
 
 ### 4.2 Capaciteitsplanning
-Weekoverzicht van de productiecapaciteit bij JM (slots per week, zoals `slotsPerWeek` bij externe partijen al bestaat) tegenover het aantal chassis in productie per week — zelfde kleurcodering als de bestaande capaciteitsschermen (ok / druk / overboekt). Daarnaast een **voorraadbalans per trailertype**: op voorraad bij JM · gereserveerd · vrij beschikbaar · in productie, plus wat er per maand gereed komt.
+Weekoverzicht van de productiecapaciteit bij JM (slots per week) tegenover het aantal chassis in productie per week — zelfde kleurcodering als de bestaande capaciteitsschermen (ok / druk / overboekt). Daarnaast een **voorraadbalans per trailertype**: chassisbalk klaar (op voorraad bij JM) · gereserveerd · vrij beschikbaar · in productie · in afbouw, plus wat er per maand gereed komt.
 
 ### 4.3 Locatieplanning
-Waar staat elk chassis: **bij JM Construct** (in productie / op voorraad), **onderweg** (opgeroepen), of — na levering — op een fysieke plaats in de bestaande **Opslag-plattegrond** bij Expandable. Geleverde chassis verschijnen als kaartje met PR-nummer in de Opslag-zone (zelfde drag-and-drop als de bestaande locatieplanning); chassis bij JM staan in een eigen paneel "Bij JM Construct".
+Waar staat elk chassis: **bij JM Construct** (in productie / chassisbalk klaar / wordt afgemaakt / gereed voor ophalen), **onderweg**, of — na ophalen — op een fysieke plaats in de bestaande **Opslag-plattegrond** bij Expandable. Opgehaalde chassis verschijnen als kaartje met PR-nummer in de Opslag-zone; chassis bij JM staan in een eigen paneel "Bij JM Construct".
 
-### 4.4 Orderdetail (notities & bijlagen)
-Per order een detailpaneel met alle velden, de chassislijst met PR-nummers en de orderhistorie. Onderaan een **notitieblok** en een **bijlagenveld** waarmee bestanden van elk type kunnen worden toegevoegd (tekeningen, specificaties, foto's, PDF's) — dezelfde bestandsopslag als bij projecten. Zowel Expandable als JM kunnen notities en bijlagen plaatsen.
+### 4.4 Order inladen + orderdetail (notities & bijlagen)
+Een order maak je aan via een **form waarin je in één keer meerdere chassis inlaadt** — per regel een PR-nummer en een IO-nummer (plus het gedeelde trailertype en revisienummer). Het orderdetail toont alle chassis met hun PR/IO en status, de orderhistorie, en onderaan een **notitieblok** en een **bijlagenveld** waarmee bestanden van elk type kunnen worden toegevoegd (tekeningen, specificaties, foto's, PDF's) — dezelfde bestandsopslag als bij projecten. Zowel Expandable als JM kunnen notities en bijlagen plaatsen.
 
 ## 5. Werkstromen
 
 ```mermaid
 flowchart TD
-  A["Expandable plaatst chassisorder<br/>IO-nummer · trailertype · aantal · revisie<br/>PR-nummer uit Business Central, handmatig ingevuld"] --> B["JM vult JM-ordernummer aan<br/>en zet de order op 'In productie'"]
-  B --> C["Chassis gereed →<br/>op voorraad bij JM"]
-  C --> D["Schaduwproject in wizard:<br/>kies beschikbaar chassis per model<br/>project neemt PR-nummer over · chassis gereserveerd"]
-  D --> E["Order bevestigd →<br/>Expandable roept het chassis op"]
-  E --> F["Levering → plek in Opslag-plattegrond<br/>productie kan starten"]
+  A["Expandable plaatst order via form<br/>meerdere chassis · elk eigen PR + IO"] --> B["JM meldt per chassis: chassisbalk klaar<br/>BC: 40% · op voorraad geboekt, blijft bij JM"]
+  B --> C["Schaduwproject in wizard:<br/>kies beschikbaar chassis per model<br/>PR overgenomen · chassis gereserveerd"]
+  C --> D["Expandable roept chassis op<br/>voor productie"]
+  D --> E["JM maakt chassis af →<br/>gereed voor ophalen"]
+  E --> F["Expandable haalt op<br/>BC: 60% · plek in Opslag · productie start"]
 ```
 
-1. **Order plaatsen** (Expandable): IO-nummer, trailertype, aantal, revisienummer en verwachte opleverdatum invullen → status *Planning*; per chassis vult Expandable het PR-nummer uit Business Central in. Tekeningen, specificaties of andere bestanden worden als bijlage toegevoegd.
-2. **JM vult aan en werkt bij**: JM-ordernummer toevoegen, status naar *In productie* / *Gereed voor levering*, leverdatum aanpassen (met reden bij vertraging). Het revisienummer beheert Expandable zelf bij een specificatiewijziging.
-3. **Gereed → op voorraad bij JM**: gerede chassis blijven bij JM staan en tellen mee als beschikbare voorraad per model.
-4. **Schaduwproject koppelen**: de projectwizard krijgt een stap "Chassis kiezen" — beschikbare chassis (op voorraad of gepland, koppeling *vrij*) gefilterd op het gekozen model. Het project neemt het PR-nummer van het gekozen chassis over; het chassis wordt *gereserveerd*. Geen chassis beschikbaar → duidelijke melding + link naar de JM-planning.
-5. **Oproepen voor productie**: bij (of vóór) de orderbevestiging roept Expandable het chassis op — status *Opgeroepen*, daarna *Geleverd* met een plek in de Opslag-plattegrond, op tijd vóór de start van de productie.
-6. **Annulering**: vervalt het schaduwproject, dan valt de koppeling terug naar *vrij*; het chassis (met PR-nummer) blijft gewoon op voorraad.
+1. **Order plaatsen** (Expandable): via het form meerdere chassis inladen — per chassis een PR-nummer (uit Business Central) en een IO-nummer, plus het gedeelde trailertype, revisienummer en verwachte chassisbalk-datum. Tekeningen of specificaties als bijlage toevoegen. Status per chassis: *In productie bij JM*.
+2. **JM meldt chassisbalk klaar** (per chassis): status → *Chassisbalk klaar*. In BC wordt 40% gefactureerd en het chassis op voorraad geboekt; het blijft fysiek bij JM. JM vult ook het JM-ordernummer aan.
+3. **Schaduwproject koppelen**: wizard-stap "Chassis kiezen" — beschikbare chassis (koppeling *vrij*, bij voorkeur al chassisbalk klaar) gefilterd op het gekozen model. Het project neemt het PR-nummer over; het chassis wordt *gereserveerd*. Geen chassis beschikbaar → melding + link naar de JM-planning.
+4. **Oproepen voor productie** (Expandable): wanneer de productie nadert, roept Expandable het chassis op → status *Opgeroepen*.
+5. **Afmaken** (JM): JM maakt het chassis af → status *Wordt afgemaakt* → *Gereed voor ophalen*.
+6. **Ophalen** (Expandable): chassis opgehaald → status *Opgehaald*, plek in de Opslag-plattegrond; in BC wordt de resterende 60% gefactureerd (tweede artikel geboekt). Productie kan starten. *Terugval:* vervalt het schaduwproject vóór afroep, dan gaat de koppeling terug naar *vrij*; het chassis blijft met PR-nummer op voorraad.
 
 ## 6. Rollen & samenwerking
 
-- Nieuwe persona in de rolwisselaar: **"JM Construct — partner"**. Ziet uitsluitend de JM-planning; mag het JM-ordernummer aanvullen, orderstatus en leverdatum bijwerken, notities plaatsen en bijlagen toevoegen. Geen toegang tot projecten, teams, beschikbaarheid of instellingen.
-- Expandable plaatst orders, vult het PR-nummer (uit Business Central) en het revisienummer in, reserveert chassis voor projecten en doet de afroep.
-- **Bekende beperking (MVP, vastgesteld):** de app draait zonder backend op lokale browseropslag. Echte gelijktijdige samenwerking vergt later een backend of synchronisatie; tot die tijd werkt JM in dezelfde gedeelde omgeving (zelfde Vercel-adres, eigen rol) met lokale data per browser.
+- Nieuwe persona in de rolwisselaar: **"JM Construct — partner"**. Ziet uitsluitend de JM-planning; mag het JM-ordernummer aanvullen, per chassis *chassisbalk klaar* / *gereed voor ophalen* melden, leverdata bijwerken, notities plaatsen en bijlagen toevoegen. Geen toegang tot projecten, teams, beschikbaarheid of instellingen.
+- Expandable plaatst orders (chassis met PR uit BC + IO), vult het revisienummer in, reserveert chassis voor projecten, roept chassis op en haalt ze op.
+- **Bekende beperking (MVP, vastgesteld):** de app draait zonder backend op lokale browseropslag. Echte gelijktijdige samenwerking vergt later een backend of synchronisatie; tot die tijd werkt JM in dezelfde gedeelde omgeving (zelfde Vercel-adres, eigen rol) met lokale data per browser. De koppeling met Business Central (facturatie, voorraadboeking) valt buiten deze planner — de planner spiegelt de status, BC blijft leidend voor de facturatie.
 
 ## 7. Integratie met de bestaande app
 
-- **Projectwizard**: nieuwe stap "Chassis kiezen" voor schaduwprojecten; het PR-nummer wordt niet meer los uitgegeven maar komt van het chassis (bestaande projecten behouden hun nummer; de migratie maakt voor hen geen chassis aan).
-- **Projectdetail → Trailer en locatie**: toont het gekoppelde chassis met herkomst (ordernummer, IO-nummer, JM-ordernummer, revisie, fysieke status en leverdatum).
-- **Dashboard**: widget "Chassisvoorraad per model" (vrij / gereserveerd / in productie / verwacht deze maand).
+- **Projectwizard**: nieuwe stap "Chassis kiezen" voor schaduwprojecten; het PR-nummer wordt niet meer los uitgegeven maar komt van het chassis (bestaande projecten behouden hun nummer).
+- **Projectdetail → Trailer en locatie**: toont het gekoppelde chassis met herkomst (ordernummer, IO-nummer, JM-ordernummer, revisie, fysieke status en data).
+- **Dashboard**: widget "Chassisvoorraad per model" (vrij / gereserveerd / in productie / chassisbalk klaar / verwacht deze maand).
 - **Externe partijen**: JM Construct blijft gewoon een externe partij; de JM-planning verwijst ernaar (contact, slots, vertraging).
 
 ## 8. Fasering
 
 | Fase | Scope | Resultaat |
 |---|---|---|
-| **A — Fundament** | Datamodel + migratie, orderbeheer (tabel + ordermodal), PR-toekenning bij plaatsing, statusflow met historie, tab Tijdsplanning | Orders zijn samen met JM bij te houden; voorraad met PR-nummers ontstaat |
+| **A — Fundament** | Datamodel + migratie, **order-inlaadform** (meerdere chassis met PR + IO), orderdetail met notities & bijlagen, fysieke statusflow met historie, tab Tijdsplanning | Orders zijn samen met JM bij te houden; voorraad met PR-nummers ontstaat |
 | **B — Inzicht** | Tabs Capaciteits- en Locatieplanning, voorraadbalans, afroep-flow, dashboard-widget | Volledig beeld van pijplijn, voorraad bij JM en fysieke locatie |
 | **C — Koppeling** | Wizard-stap "Chassis kiezen", reserveren/terugvallen, JM-rol met permissies | Schaduwprojecten plannen op echte voorraad; JM werkt zelfstandig mee |
 
@@ -129,24 +133,28 @@ flowchart TD
 
 | # | Uitgangspunt | Besluit |
 |---|---|---|
-| U1 | IO-nummer | Het **inkoopnummer** van Expandable; verplicht bij orderplaatsing |
-| U2 | Herkomst PR-nummer | Komt uit **Business Central**, **handmatig** door Expandable ingevuld bij orderplaatsing (niet automatisch door de planner) |
-| U3 | JM-ordernummer | Wordt **later door JM zelf** aangevuld |
-| U4 | Trailertypes per order | **Eén type per order** |
-| U5 | Revisienummer | **Open tekstveld**, door Expandable zelf ingevuld; geldt per order voor alle chassis |
-| U6 | Voorraadlocatie | Gerede chassis blijven **op voorraad bij JM** tot Expandable ze **oproept voor productie**; na levering plek in de bestaande Opslag-plattegrond |
-| U7 | Ordereinde | Order is afgerond zodra alle chassis op voorraad bij JM staan |
-| U8 | Architectuur MVP | Gedeelde omgeving met JM-rol, zonder realtime sync; backend/synchronisatie later |
-| U9 | Orders aanmaken | Door Expandable; JM werkt bestaande orders bij |
+| U1 | IO-nummer | **Per chassis** een eigen IO-nummer (inkoopnummer); **geen overkoepelend order-IO** |
+| U2 | Herkomst PR-nummer | Komt uit **Business Central**, **handmatig** door Expandable ingevuld bij orderplaatsing, per chassis (niet automatisch door de planner) |
+| U3 | Order = batch | Via een **form** worden meerdere chassis (elk PR + IO) in één keer ingeladen |
+| U4 | JM-ordernummer | Wordt **later door JM zelf** aangevuld |
+| U5 | Trailertype per order | **Eén type per order** |
+| U6 | Revisienummer | **Open tekstveld**, door Expandable zelf ingevuld; geldt per order voor alle chassis |
+| U7 | Fysieke statusflow | in productie → **chassisbalk klaar** → opgeroepen → afmaken → **gereed voor ophalen** → opgehaald; status per chassis |
+| U8 | Voorraad & afroep | Na *chassisbalk klaar* blijft het chassis **op voorraad bij JM** tot Expandable het **oproept**; pas daarna maakt JM het af en haalt Expandable het op |
+| U9 | Business Central | Elke IO = **twee artikelen**: 40% bij chassisbalk klaar (op voorraad geboekt, blijft bij JM), 60% bij ophalen; BC blijft leidend voor facturatie |
 | U10 | Bijlagen | Order en notities ondersteunen **bestanden van elk type** via de bestaande bestandsopslag (IndexedDB) |
 | U11 | Bron van waarheid | Deze planning vervangt het huidige losse **Excel-overzicht** |
+| U12 | Architectuur MVP | Gedeelde omgeving met JM-rol, zonder realtime sync; backend/synchronisatie later |
 
-## 10. Nog af te stemmen met JM Construct
+## 10. Nog te bepalen
 
-1. **Afroeptermijn**: hoeveel werkdagen zitten er tussen oproepen en levering (voor de automatische planning van de afroepdatum)?
-2. **Capaciteit**: hoeveel chassis kan JM parallel in productie hebben (slots per week) — input voor de Capaciteitsplanning-tab?
-3. **Werkwijze bijwerken**: werkt JM de status per order bij of ook per individueel chassis?
+| # | Vraag | Waarom het ertoe doet |
+|---|---|---|
+| A1 | **Doorlooptijden / procestijden** (chassisbalk maken, afmaken na afroep) — *nog te bepalen* | Bepaalt de tijdlijn en de automatische data in de planning |
+| A2 | Afroeptermijn: hoeveel werkdagen tussen oproepen en gereed voor ophalen? | Plant de afroepdatum vóór de productiestart |
+| A3 | Capaciteit: hoeveel chassis kan JM parallel in productie/afbouw hebben (slots per week)? | Input voor de Capaciteitsplanning-tab |
+| A4 | Meldt JM de status per chassis of per order? | Bepaalt hoe fijnmazig de statusflow in het scherm wordt |
 
 ---
 
-*Volgende stap: dit voorstel doornemen met JM Construct (§10) — daarna wordt Fase A gebouwd.*
+*Volgende stap: doorlooptijden en de punten in §10 bepalen/afstemmen met JM Construct — daarna wordt Fase A gebouwd.*
