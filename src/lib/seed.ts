@@ -194,6 +194,12 @@ export function maakSeedData(): AppData {
     m('mw-dennis', 'Dennis Kramer', 'Elektromonteur', 'afbouw', 'team-afb-b', 40, ['Elektra', 'Audio/video']),
     m('mw-marit', 'Marit Jonker', 'Interieurbouwer', 'afbouw', 'team-afb-b', 36, ['Interieurbouw']),
     m('mw-omar', 'Omar El Idrissi', 'Allround afbouwer', 'afbouw', 'team-afb-b', 40, ['Afwerking', 'Montage']),
+
+    // Overige afdelingen (geen productieteam; capaciteit niet in de productieplanning, wel verlof/beschikbaarheid)
+    m('mw-rick', 'Rick van Leeuwen', 'Accountmanager', 'afd-sales', undefined, 40, ['Sales', 'Klantcontact']),
+    m('mw-sanne-sales', 'Sanne de Groot', 'Salessupport', 'afd-sales', undefined, 32, ['Offertes', 'CRM']),
+    m('mw-hakan', 'Hakan Yılmaz', 'Administratief medewerker', 'afd-kantoor', undefined, 36, ['Administratie', 'Facturatie']),
+    m('mw-linda', 'Linda Bakker', 'Office manager', 'afd-kantoor', undefined, 40, ['HR', 'Planning']),
   ]
 
   // ---------- Afwezigheid ----------
@@ -403,6 +409,10 @@ export function maakSeedData(): AppData {
     projectHistorie: maakSeedHistorie(),
     bestanden: [],
     partnerTypes: [],
+    overigeAfdelingen: [
+      { id: 'afd-sales', naam: 'Sales & Commercie', volgorde: 1 },
+      { id: 'afd-kantoor', naam: 'Kantoor & administratie', volgorde: 2 },
+    ],
   }
 }
 

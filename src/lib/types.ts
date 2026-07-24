@@ -77,6 +77,27 @@ export const AFDELING_LABELS: Record<Afdeling, string> = {
 /** Afdelingen met eigen interne teams (voor capaciteitsoverzichten) */
 export const PRODUCTIE_AFDELINGEN: Afdeling[] = ['engineering', 'chassis', 'panelen', 'afbouw']
 
+/**
+ * Overige (niet-productie) afdeling: draagt bij aan de bedrijfsvoering maar telt niet
+ * mee in de productiecapaciteitsplanning. Medewerkers hier worden wél gevolgd voor
+ * beschikbaarheid en verlof. Vrij toe te voegen in "Teams & medewerkers".
+ */
+export interface OverigeAfdeling {
+  id: string // eigen id, bijv. 'afd-sales'
+  naam: string // 'Sales & Commercie'
+  volgorde: number
+}
+
+/** Label voor een afdeling-id: bekende productieafdeling via AFDELING_LABELS, anders de eigen naam. */
+export function afdelingLabel(id: string, overige: OverigeAfdeling[] = []): string {
+  return (AFDELING_LABELS as Record<string, string>)[id] ?? overige.find((a) => a.id === id)?.naam ?? id
+}
+
+/** True als de afdeling-id een productieafdeling is (meetelt in de productiecapaciteit). */
+export function isProductieAfdeling(id: string): id is Afdeling {
+  return (PRODUCTIE_AFDELINGEN as string[]).includes(id)
+}
+
 export type FaseKey =
   | 'salesoverdracht'
   | 'engineering'
@@ -304,7 +325,8 @@ export interface Medewerker {
   id: string
   naam: string
   functie: string
-  afdeling: Afdeling
+  /** Productieafdeling (Afdeling-sleutel) óf een eigen OverigeAfdeling-id. */
+  afdeling: string
   vaardigheden: string[]
   contracturen: number // per week
   beschikbaarheidPct: number // structureel, 0-100
@@ -691,6 +713,8 @@ export interface AppData {
   bestanden: BestandMeta[]
   /** Zelf toegevoegde partnertypes (naast de standaard EXTERN_TYPE_LABELS). */
   partnerTypes: string[]
+  /** Niet-productie afdelingen (bijdrage aan bedrijfsvoering, buiten de productiecapaciteit). */
+  overigeAfdelingen: OverigeAfdeling[]
 }
 
 export interface UIState {

@@ -20,6 +20,7 @@ import {
 } from 'lucide-react'
 import { useApp } from '../store/AppState'
 import {
+  afdelingLabel,
   AFDELING_LABELS,
   AFWEZIGHEID_LABELS,
   PRODUCTIE_AFDELINGEN,
@@ -870,7 +871,7 @@ export default function Dashboard() {
                   <div className="min-w-0 flex-1">
                     <div className="truncate font-medium text-slate-800">{medewerker?.naam ?? 'Onbekende medewerker'}</div>
                     <div className="truncate text-xs text-slate-500">
-                      {medewerker ? AFDELING_LABELS[medewerker.afdeling] : ''}
+                      {medewerker ? afdelingLabel(medewerker.afdeling, data.overigeAfdelingen) : ''}
                       {afw.dagdeel !== 'heel' ? ` · alleen ${afw.dagdeel}` : ''}
                     </div>
                   </div>
