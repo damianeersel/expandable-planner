@@ -4,7 +4,7 @@
 
 - **Zoekbalk in Planning** (tijdlijn): filtert projecten live op PR-nummer, naam of klant; "wisFilters" wist ook de zoekterm.
 - **Voortgangsslider verwijderd** uit alle projectschermen (`VoortgangInvoer` bestaat niet meer): procesrijen tonen een statische balk; voor processen zonder taken is de voortgang instelbaar via een nummerveld in "Proces bewerken" (zelfde statusafleiding: 100% = gereed, >0% = bezig). De verkoopkans-slider in de wizard is bewust ongemoeid (ander control).
-- **JM Construct-plan**: `JM-CONSTRUCT-PLAN.md` — valideerbaar voorstel voor de aparte chassisplanning (orders met JM-ordernummer/IO-nummer/revisie/trailertype, statusflow planning → in productie → gereed voor levering, PR-nummer ontstaat bij chassis op voorraad, wizardkoppeling voor schaduwprojecten, tabs tijd/capaciteit/locatie, JM-rol). Nog NIET gebouwd — eerst §9 (aannames V1–V8) valideren.
+- **JM Construct-plan** (`JM-CONSTRUCT-PLAN.md`, concept 0.2): voorstel voor de aparte chassisplanning. Intern gevalideerd door Damian (24-07): PR-nummer direct bij orderplaatsing per chassis, IO = inkoopnummer, JM-ordernummer vult JM later zelf aan, gerede chassis blijven op voorraad bij JM tot Expandable ze oproept voor productie, revisie per order, één trailertype per order (§9 = vastgestelde uitgangspunten U1–U9). Nog NIET gebouwd — eerst §10 (afroeptermijn, slots, werkwijze) afstemmen met JM, daarna Fase A.
 
 # Eerdere stand — 22-07-2026 (avond)
 
